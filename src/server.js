@@ -1,0 +1,129 @@
+require('dotenv').config();
+
+const path = require('path');
+const crypto = require('crypto');
+const express = require('express');
+const session = require('express-session');
+const cors = require('cors');
+
+const { connect } = require('./db');
+const MongoSessionStore = require('./session-store');
+const { router: authRouter } = require('./auth');
+const adminRouter = require('./admin');
+const answerRouter = require('./answer');
+const documentsRouter = require('./documents');
+const transcribeRouter = require('./transcribe');
+const { router: historyRouter } = require('./history');
+const { router: sessionsRouter } = require('./sessions');
+const notesRouter = require('./notes');
+const visionRouter = require('./vision');
+const { router: handoffRouter } = require('./handoff');
+
+const app = express();
+const PORT = Number(process.env.PORT || 4000);
+const isProduction = process.env.NODE_ENV === 'production';
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
+
+app.disable('x-powered-by');
+
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY));
+
+app.use(cors({
+  origin: FRONTEND_ORIGIN,
+  credentials: true,
+}));
+
+app.use('/api/vision', express.json({ limit: '32mb' }));
+app.use(express.json({ limit: '1mb' }));
+
+let sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  if (isProduction) {
+    console.error('SESSION_SECRET is required in production. Refusing to start.');
+    process.exit(1);
+  }
+  sessionSecret = crypto.randomBytes(32).toString('hex');
+  console.warn('SESSION_SECRET not set — using a random one. Sessions reset on restart.');
+}
+
+app.use(
+  session({
+    name: 'sid',
+    secret: sessionSecret,
+    store: new MongoSessionStore(),
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isProduction,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+  })
+);
+
+app.use('/api/auth', authRouter);
+app.use('/api/admin', adminRouter);
+app.use('/api/answer', answerRouter);
+app.use('/api/documents', documentsRouter);
+app.use('/api/transcribe', transcribeRouter);
+app.use('/api/history', historyRouter);
+app.use('/api/vision', visionRouter);
+app.use('/api/sessions', handoffRouter);
+app.use('/api/sessions', notesRouter);
+app.use('/api/sessions', sessionsRouter);
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, openai_configured: Boolean(process.env.OPENAI_API_KEY) });
+});
+
+app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
+  const platform = req.params.platform.toLowerCase();
+  const distDir = path.join(__dirname, '..', '..', 'desktop-electron', 'dist');
+  const fs = require('fs');
+
+  if (!fs.existsSync(distDir)) {
+    return res.status(404).send('No built installers found.');
+  }
+
+  const files = fs.readdirSync(distDir);
+  let targetFile = null;
+  if (platform === 'mac' || platform === 'dmg') {
+    targetFile = files.find((f) => f.endsWith('.dmg') || f.endsWith('.zip'));
+  } else if (platform === 'win' || platform === 'exe') {
+    targetFile = files.find((f) => f.endsWith('.exe'));
+  }
+  if (!targetFile) {
+    return res.status(404).send(`No installer binary found for ${platform}.`);
+  }
+  return res.download(path.join(distDir, targetFile));
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'not_found' });
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (res.headersSent) return res.end();
+  return res
+    .status(err.status || 500)
+    .json({ error: err.code || 'server_error', message: err.message || 'Something went wrong.' });
+});
+
+async function start() {
+  await connect();
+  app.listen(PORT, () => {
+    console.log(`feonixai api listening on http://localhost:${PORT}`);
+  });
+}
+
+if (require.main === module) {
+  start().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = app;
