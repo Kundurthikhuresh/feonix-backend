@@ -15,7 +15,6 @@ const { tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
 const { requireAuth } = require('./auth');
 const { openai } = require('./openai-client');
 const quota = require('./quota');
-const { sessionExists, getSession } = require('./sessions');
 const { technicalTerms } = require('./modes');
 
 const MODEL = process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
@@ -169,6 +168,26 @@ function stripPromptEcho(text, prompt) {
   return cleaned.length < 2 ? '' : cleaned;
 }
 
+async function transcribeAudio(buffer, filename, contentType, session) {
+  const file = await toFile(buffer, filename, { type: contentType || 'audio/webm' });
+  const promptUsed = promptFor(session);
+  const result = await openai().audio.transcriptions.create({
+    model: MODEL,
+    file,
+    prompt: promptUsed,
+    ...(LANGUAGE_CODES[String((session && session.language) || '').toLowerCase()]
+      ? { language: LANGUAGE_CODES[String(session.language).toLowerCase()] }
+      : {}),
+  });
+
+  const cleaned = stripPromptEcho(result.text, promptUsed);
+  return {
+    text: cleaned,
+    rawText: result.text,
+    usage: result.usage || null,
+  };
+}
+
 const router = express.Router();
 
 router.post(
@@ -189,6 +208,7 @@ router.post(
       });
     }
 
+    const { sessionExists, getSession } = require('./sessions');
     const used = await tokensUsedThisMonth(req.user.id);
     const gate = quota.check(req.user, used, RESERVE_TOKENS);
     if (gate.blocked) {
@@ -205,18 +225,9 @@ router.post(
     let outputTokens = 0;
 
     try {
-      const file = await toFile(req.body, filename, { type: req.get('Content-Type') || 'audio/webm' });
       const session = sessionId ? await getSession(req.user.id, sessionId) : null;
-      // Captured once: the filter must see the exact string Whisper saw.
-      const promptUsed = promptFor(session);
-      const result = await openai().audio.transcriptions.create({
-        model: MODEL,
-        file,
-        prompt: promptUsed,
-        ...(LANGUAGE_CODES[String((session && session.language) || '').toLowerCase()]
-          ? { language: LANGUAGE_CODES[String(session.language).toLowerCase()] }
-          : {}),
-      });
+      const contentType = req.get('Content-Type') || 'audio/webm';
+      const result = await transcribeAudio(req.body, filename, contentType, session);
 
       if (result.usage) {
         inputTokens = result.usage.input_tokens || 0;
@@ -227,18 +238,17 @@ router.post(
         outputTokens = RESERVE_TOKENS;
       }
 
-      const cleaned = stripPromptEcho(result.text, promptUsed);
-      if (!cleaned && result.text && result.text.trim()) {
+      if (!result.text && result.rawText && result.rawText.trim()) {
         // Whisper returned words but every sentence was prompt echo or a known
         // hallucination. Logged rather than dropped in silence: during a live
         // interview this is indistinguishable from "nobody spoke".
         console.debug(
           `[TRANSCRIPT DROP] reason=filtered t=${new Date().toISOString()} ` +
-          `session=${sessionId || '-'} rawLen=${result.text.trim().length} ` +
-          `raw="${result.text.trim().slice(0, 80).replace(/\s+/g, ' ')}"`
+          `session=${sessionId || '-'} rawLen=${result.rawText.trim().length} ` +
+          `raw="${result.rawText.trim().slice(0, 80).replace(/\s+/g, ' ')}"`
         );
       }
-      return res.json({ text: cleaned });
+      return res.json({ text: result.text });
     } catch (err) {
       // Nothing was transcribed, so release the whole reservation.
       inputTokens = 0;
@@ -250,4 +260,11 @@ router.post(
   }
 );
 
-module.exports = router;
+module.exports = {
+  router,
+  transcribeAudio,
+  MODEL,
+  RESERVE_TOKENS,
+  ALLOWED_EXTENSIONS
+};
+
