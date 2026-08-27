@@ -1,7 +1,18 @@
 const express = require('express');
-const { col, nextId, nowSql, isExpired, addMinutesFromNow, publicDoc, sessionTokensUsed } = require('./db');
+const { col, nextId, nowSql, isExpired, addMinutesFromNow, publicDoc, sessionTokensUsed, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
 const { requireAuth } = require('./auth');
 const credits = require('./credits');
+const { transcribeAudio, MODEL: TRANSCRIBE_MODEL, RESERVE_TOKENS: TRANSCRIBE_RESERVE_TOKENS } = require('./transcribe');
+const { buildMessages, classifyQuestion, modelFor } = require('./answer');
+const { saveAnswer } = require('./history');
+const { openai } = require('./openai-client');
+const quota = require('./quota');
+const multer = require('multer');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 const router = express.Router();
 
@@ -231,6 +242,275 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
     if (!result.deletedCount) return res.status(404).json({ error: 'not_found' });
     await col('transcript_lines').deleteMany({ session_id: Number(req.params.id) });
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/audio', requireAuth, upload.single('audio'), async (req, res, next) => {
+  try {
+    const owned = await ownedSession(req.user.id, req.params.id);
+    if (!owned) return res.status(404).json({ error: 'not_found' });
+
+    if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
+      return res.status(400).json({ error: 'empty_audio', message: 'No audio chunk received.' });
+    }
+
+    const used = await tokensUsedThisMonth(req.user.id);
+    const gate = quota.check(req.user, used, TRANSCRIBE_RESERVE_TOKENS);
+    if (gate.blocked) {
+      return res.status(429).json({
+        error: 'quota_exhausted',
+        message: 'Monthly token safety limit reached. Transcription stopped.',
+      });
+    }
+
+    const usageId = await reserveUsage(req.user.id, TRANSCRIBE_MODEL, 0, TRANSCRIBE_RESERVE_TOKENS, owned.id);
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let text = '';
+
+    try {
+      const filename = req.file.originalname || 'chunk.webm';
+      const contentType = req.file.mimetype || 'audio/webm';
+      const result = await transcribeAudio(req.file.buffer, filename, contentType, owned);
+      text = result.text;
+
+      if (result.usage) {
+        inputTokens = result.usage.input_tokens || 0;
+        outputTokens = result.usage.output_tokens || 0;
+      } else {
+        outputTokens = TRANSCRIBE_RESERVE_TOKENS;
+      }
+    } catch (err) {
+      inputTokens = 0;
+      outputTokens = 0;
+      throw err;
+    } finally {
+      await settleUsage(usageId, inputTokens, outputTokens);
+    }
+
+    if (!text || !text.trim()) {
+      const lines = await col('transcript_lines')
+        .find({ session_id: owned.id })
+        .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+        .sort({ id: 1 })
+        .toArray();
+      const answers = await col('answers')
+        .find({ session_id: owned.id })
+        .project({ _id: 0, id: 1, question: 1, reply: 1, mode: 1, action: 1, created_at: 1 })
+        .sort({ id: 1 })
+        .toArray();
+      const answersMapped = answers.map(a => ({ ...a, answer: a.reply }));
+      return res.json({ transcripts: lines, answers: answersMapped });
+    }
+
+    const isQuestion = text.trim().endsWith('?');
+
+    const transcriptLineId = await nextId('transcript_lines');
+    await col('transcript_lines').insertOne({
+      id: transcriptLineId,
+      session_id: owned.id,
+      text,
+      is_question: isQuestion ? 1 : 0,
+      created_at: nowSql(),
+    });
+
+    if (owned.auto_answer && isQuestion) {
+      const previousLines = await col('transcript_lines')
+        .find({ session_id: owned.id })
+        .sort({ id: 1 })
+        .toArray();
+      const transcriptStr = previousLines.map(l => (l.is_question ? 'Q: ' : '- ') + l.text).join('\n');
+
+      const MAX_DOC_CHARS = 8000;
+      const loadDoc = (kind) => loadDocContent(req.user.id, kind, MAX_DOC_CHARS);
+
+      const messages = buildMessages({
+        question: text,
+        transcript: transcriptStr,
+        resume: await loadDoc('resume'),
+        experience: await loadDoc('experience'),
+        jobDescription: await loadDoc('job_description'),
+        company: await loadDoc('company'),
+        sessionJobDescription: owned.job_description,
+        sessionCompany: owned.company,
+        sessionRole: owned.role,
+        sessionContext: owned.context,
+        mode: owned.mode,
+        action: 'answer',
+        language: owned.language || 'English',
+      });
+
+      const promptEstimate = Math.ceil(messages.map(m => m.content).join('\n').length / 4);
+      const usedNow = await tokensUsedThisMonth(req.user.id);
+      const answerGate = quota.check(req.user, usedNow, promptEstimate + 64);
+      
+      if (!answerGate.blocked) {
+        const chosenModel = modelFor(owned);
+        const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 900);
+        const budget = quota.outputBudget(MAX_OUTPUT_TOKENS, answerGate.remaining, promptEstimate);
+        const answerUsageId = await reserveUsage(req.user.id, chosenModel, promptEstimate, budget, owned.id);
+        
+        let answerText = '';
+        let reported = null;
+        try {
+          const completion = await openai().chat.completions.create({
+            model: chosenModel,
+            messages,
+            temperature: 0.3,
+            max_completion_tokens: budget,
+          });
+          answerText = (completion.choices[0] && completion.choices[0].message.content) || '';
+          reported = completion.usage || null;
+        } finally {
+          await settleUsage(
+            answerUsageId,
+            reported ? reported.prompt_tokens : promptEstimate,
+            reported ? reported.completion_tokens : Math.ceil(answerText.length / 4)
+          );
+        }
+
+        await saveAnswer({
+          userId: req.user.id,
+          question: text,
+          reply: answerText,
+          mode: owned.mode,
+          action: 'answer',
+          sessionId: owned.id,
+        });
+      }
+    }
+
+    const finalLines = await col('transcript_lines')
+      .find({ session_id: owned.id })
+      .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+      .sort({ id: 1 })
+      .toArray();
+    const finalAnswers = await col('answers')
+      .find({ session_id: owned.id })
+      .project({ _id: 0, id: 1, question: 1, reply: 1, mode: 1, action: 1, created_at: 1 })
+      .sort({ id: 1 })
+      .toArray();
+    const answersMapped = finalAnswers.map(a => ({ ...a, answer: a.reply }));
+
+    res.json({ transcripts: finalLines, answers: answersMapped });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/questions', requireAuth, async (req, res, next) => {
+  try {
+    const owned = await ownedSession(req.user.id, req.params.id);
+    if (!owned) return res.status(404).json({ error: 'not_found' });
+
+    const question = String(req.body && req.body.question).trim();
+    if (!question) return res.status(400).json({ error: 'missing_question', message: 'question is required.' });
+
+    const transcriptLineId = await nextId('transcript_lines');
+    await col('transcript_lines').insertOne({
+      id: transcriptLineId,
+      session_id: owned.id,
+      text: question,
+      is_question: 1,
+      created_at: nowSql(),
+    });
+
+    const previousLines = await col('transcript_lines')
+      .find({ session_id: owned.id })
+      .sort({ id: 1 })
+      .toArray();
+    const transcriptStr = previousLines.map(l => (l.is_question ? 'Q: ' : '- ') + l.text).join('\n');
+
+    const MAX_DOC_CHARS = 8000;
+    const loadDoc = (kind) => loadDocContent(req.user.id, kind, MAX_DOC_CHARS);
+
+    const messages = buildMessages({
+      question,
+      transcript: transcriptStr,
+      resume: await loadDoc('resume'),
+      experience: await loadDoc('experience'),
+      jobDescription: await loadDoc('job_description'),
+      company: await loadDoc('company'),
+      sessionJobDescription: owned.job_description,
+      sessionCompany: owned.company,
+      sessionRole: owned.role,
+      sessionContext: owned.context,
+      mode: owned.mode,
+      action: 'answer',
+      language: owned.language || 'English',
+    });
+
+    const promptEstimate = Math.ceil(messages.map(m => m.content).join('\n').length / 4);
+    const used = await tokensUsedThisMonth(req.user.id);
+    const gate = quota.check(req.user, used, promptEstimate + 64);
+
+    let answerText = '';
+    let kind = 'AI Assistant';
+
+    if (gate.blocked) {
+      return res.status(429).json({
+        error: 'quota_exhausted',
+        message: 'Monthly token safety limit reached.',
+      });
+    }
+
+    const chosenModel = modelFor(owned);
+    const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 900);
+    const budget = quota.outputBudget(MAX_OUTPUT_TOKENS, gate.remaining, promptEstimate);
+    const usageId = await reserveUsage(req.user.id, chosenModel, promptEstimate, budget, owned.id);
+
+    let reported = null;
+    try {
+      const completion = await openai().chat.completions.create({
+        model: chosenModel,
+        messages,
+        temperature: 0.3,
+        max_completion_tokens: budget,
+      });
+      answerText = (completion.choices[0] && completion.choices[0].message.content) || '';
+      reported = completion.usage || null;
+      kind = classifyQuestion(question);
+    } finally {
+      await settleUsage(
+        usageId,
+        reported ? reported.prompt_tokens : promptEstimate,
+        reported ? reported.completion_tokens : Math.ceil(answerText.length / 4)
+      );
+    }
+
+    await saveAnswer({
+      userId: req.user.id,
+      question,
+      reply: answerText,
+      mode: owned.mode,
+      action: 'answer',
+      sessionId: owned.id,
+    });
+
+    res.json({
+      question,
+      answer: answerText,
+      kind,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/:id/transcript', requireAuth, async (req, res, next) => {
+  try {
+    const owned = await ownedSession(req.user.id, req.params.id);
+    if (!owned) return res.status(404).json({ error: 'not_found' });
+
+    const lines = await col('transcript_lines')
+      .find({ session_id: owned.id })
+      .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+      .sort({ id: 1 })
+      .toArray();
+
+    res.json({ transcripts: lines });
   } catch (err) {
     next(err);
   }

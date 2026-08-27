@@ -21,7 +21,6 @@ const {
   groundingBlock, classifyQuestion,
 } = require('./modes');
 const { saveAnswer } = require('./history');
-const { getSession } = require('./sessions');
 const credits = require('./credits');
 const quota = require('./quota');
 
@@ -252,6 +251,7 @@ router.post('/', requireAuth, async (req, res, next) => {
 
   // Unknown or someone else's session id attributes to nothing rather than
   // failing the call — a bad id shouldn't cost the user their answer.
+  const { getSession } = require('./sessions');
   const session = await getSession(req.user.id, req.body && req.body.session_id);
   const sessionId = session ? session.id : null;
 
@@ -464,4 +464,10 @@ router.post('/', requireAuth, async (req, res, next) => {
   return undefined;
 });
 
-module.exports = router;
+module.exports = {
+  router,
+  buildMessages,
+  classifyQuestion,
+  modelFor,
+  estimateTokens,
+};
