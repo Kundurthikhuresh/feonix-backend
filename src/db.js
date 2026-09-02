@@ -7,6 +7,32 @@ const { MongoClient } = require('mongodb');
 // resolver (querySrv ECONNREFUSED). Public resolvers still work.
 if (process.platform === 'win32') {
   dns.setServers(['8.8.8.8', '1.1.1.1']);
+
+  // dns.setServers() only redirects Node's c-ares resolver (dns.resolve*).
+  // The actual per-shard TLS connections go through dns.lookup(), which on
+  // Windows always uses the OS's native getaddrinfo — ignoring the servers
+  // set above — and that OS resolver is flaky for Atlas shard hostnames
+  // (works for some shards, ENOTFOUND for others). Route lookups through
+  // the same public resolver instead, falling back to the OS resolver for
+  // anything it can't resolve (e.g. localhost).
+  const osLookup = dns.lookup;
+  dns.lookup = (hostname, options, callback) => {
+    const cb = typeof options === 'function' ? options : callback;
+    const opts = typeof options === 'object' && options ? options : {};
+    const family = opts.family;
+
+    const resolveVia = family === 6 ? dns.resolve6 : dns.resolve4;
+    resolveVia(hostname, (err, addresses) => {
+      if (err || !addresses || !addresses.length) {
+        return osLookup(hostname, options, callback);
+      }
+      const resolvedFamily = family === 6 ? 6 : 4;
+      if (opts.all) {
+        return cb(null, addresses.map((address) => ({ address, family: resolvedFamily })));
+      }
+      cb(null, addresses[0], resolvedFamily);
+    });
+  };
 }
 
 // OpenSSL 3.x (Node 17+) requires secure renegotiation by default, but this
@@ -103,6 +129,30 @@ async function ensureIndexes() {
   await col('sessions').createIndex({ expires: 1 });
   await col('handoff_tokens').createIndex({ token: 1 }, { unique: true });
   await col('handoff_tokens').createIndex({ expires_at: 1 });
+  await col('password_resets').createIndex({ token: 1 }, { unique: true });
+  await col('password_resets').createIndex({ user_id: 1 });
+
+  // Career Platform indexes
+  await col('user_profiles').createIndex({ user_id: 1 }, { unique: true });
+  await col('resume_analyses').createIndex({ id: 1 }, { unique: true });
+  await col('resume_analyses').createIndex({ user_id: 1, created_at: -1 });
+  await col('resume_analyses').createIndex({ document_id: 1 });
+  await col('job_analyses').createIndex({ id: 1 }, { unique: true });
+  await col('job_analyses').createIndex({ user_id: 1, created_at: -1 });
+  await col('job_matches').createIndex({ id: 1 }, { unique: true });
+  await col('job_matches').createIndex({ user_id: 1, created_at: -1 });
+  await col('cover_letters').createIndex({ id: 1 }, { unique: true });
+  await col('cover_letters').createIndex({ user_id: 1, created_at: -1 });
+  await col('interview_prep_sessions').createIndex({ id: 1 }, { unique: true });
+  await col('interview_prep_sessions').createIndex({ user_id: 1, created_at: -1 });
+  await col('job_applications').createIndex({ id: 1 }, { unique: true });
+  await col('job_applications').createIndex({ user_id: 1, status: 1 });
+  await col('job_applications').createIndex({ user_id: 1, created_at: -1 });
+  await col('notifications').createIndex({ id: 1 }, { unique: true });
+  await col('notifications').createIndex({ user_id: 1, read: 1, created_at: -1 });
+  await col('ai_usage').createIndex({ id: 1 }, { unique: true });
+  await col('ai_usage').createIndex({ user_id: 1, feature: 1, created_at: -1 });
+  await col('users').createIndex({ stripe_customer_id: 1 }, { sparse: true });
 }
 
 async function nextId(name) {
