@@ -19,6 +19,16 @@ const notesRouter = require('./notes');
 const visionRouter = require('./vision');
 const { router: handoffRouter } = require('./handoff');
 
+// Career Platform Routes
+const profileRouter = require('./profile');
+const stripeRouter = require('./stripe');
+const resumeAiRouter = require('./resume-ai');
+const jobAnalyzerRouter = require('./job-analyzer');
+const coverLetterRouter = require('./cover-letter');
+const interviewPrepRouter = require('./interview-prep');
+const applicationsRouter = require('./applications');
+const { router: notificationsRouter } = require('./notifications');
+
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
 const isProduction = process.env.NODE_ENV === 'production';
@@ -33,8 +43,11 @@ app.use(cors({
   credentials: true,
 }));
 
+// Stripe webhook MUST receive raw body — register BEFORE express.json()
+app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+
 app.use('/api/vision', express.json({ limit: '32mb' }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '4mb' }));
 
 let sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) {
@@ -73,6 +86,16 @@ app.use('/api/vision', visionRouter);
 app.use('/api/sessions', handoffRouter);
 app.use('/api/sessions', notesRouter);
 app.use('/api/sessions', sessionsRouter);
+
+// Career Platform Routes
+app.use('/api/profile', profileRouter);
+app.use('/api/stripe', stripeRouter);
+app.use('/api/resume', resumeAiRouter);
+app.use('/api/job', jobAnalyzerRouter);
+app.use('/api/cover-letter', coverLetterRouter);
+app.use('/api/interview-prep', interviewPrepRouter);
+app.use('/api/applications', applicationsRouter);
+app.use('/api/notifications', notificationsRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, openai_configured: Boolean(process.env.OPENAI_API_KEY) });

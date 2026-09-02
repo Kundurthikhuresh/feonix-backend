@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { col, nextId, nowSql, tokensUsedThisMonth, publicDoc } = require('./db');
+const { sendWelcomeEmail, sendPasswordResetEmail } = require('./mailer');
 
 const BCRYPT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 10;
@@ -52,6 +53,20 @@ const registerLimiter = rateLimit({
   max: 5,
   keyFn: (req) => `register:${req.ip}`,
 });
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyFn: (req) => `forgot:${req.ip}:${normalizeEmail(req.body && req.body.email)}`,
+});
+
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyFn: (req) => `reset:${req.ip}`,
+});
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, matches the email copy
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -146,17 +161,11 @@ router.post('/register', registerLimiter, async (req, res, next) => {
     }
 
     const isFirstAccount = (await col('users').countDocuments()) === 0;
-    if (!isFirstAccount) {
-      const expected = process.env.SIGNUP_CODE;
-      if (!expected) {
-        return res.status(403).json({
-          error: 'registration_closed',
-          message: 'Registration is closed. Ask the owner for an account.',
-        });
-      }
-      if (!safeEqual(signupCode, expected)) {
-        return res.status(403).json({ error: 'invalid_signup_code', message: 'Invalid signup code.' });
-      }
+    // SIGNUP_CODE is optional: set it to gate registration behind an invite
+    // code, or leave it unset (the default) for open registration.
+    const expectedCode = process.env.SIGNUP_CODE;
+    if (!isFirstAccount && expectedCode && !safeEqual(signupCode, expectedCode)) {
+      return res.status(403).json({ error: 'invalid_signup_code', message: 'Invalid signup code.' });
     }
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -179,6 +188,10 @@ router.post('/register', registerLimiter, async (req, res, next) => {
     }
 
     await startSession(req, id);
+
+    // Send welcome email (fire-and-forget)
+    sendWelcomeEmail(email).catch(console.error);
+
     return res.status(201).json({ user: await publicUser(await findUserById(id)) });
   } catch (err) {
     return next(err);
@@ -196,6 +209,83 @@ router.post('/login', loginLimiter, async (req, res, next) => {
     }
     await startSession(req, user.id);
     return res.json({ user: await publicUser(user) });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.post('/forgot-password', forgotPasswordLimiter, async (req, res, next) => {
+  try {
+    const email = normalizeEmail(req.body && req.body.email);
+    const genericResponse = {
+      message: 'If an account exists for that email, a reset link has been sent.',
+    };
+
+    if (!looksLikeEmail(email)) {
+      // Still 200 here — an invalid-email response would let a caller probe
+      // for which strings are worth trying, same reasoning as below.
+      return res.json(genericResponse);
+    }
+
+    const user = await findUserByEmail(email);
+    if (user && !user.disabled) {
+      const token = crypto.randomBytes(32).toString('base64url');
+      await col('password_resets').insertOne({
+        token,
+        user_id: user.id,
+        expires_at: Date.now() + RESET_TOKEN_TTL_MS,
+        used_at: null,
+        created_at: nowSql(),
+      });
+
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      const resetUrl = `${appUrl}/reset-password?token=${token}`;
+      sendPasswordResetEmail(email, resetUrl).catch(console.error);
+    }
+
+    // Always respond the same way whether or not the account exists, so
+    // this endpoint can't be used to enumerate registered emails.
+    return res.json(genericResponse);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.post('/reset-password', resetPasswordLimiter, async (req, res, next) => {
+  try {
+    const token = String((req.body && req.body.token) || '');
+    const password = String((req.body && req.body.password) || '');
+
+    if (!token) {
+      return res.status(400).json({ error: 'missing_token', message: 'Missing reset token.' });
+    }
+    if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+      return res.status(400).json({
+        error: 'weak_password',
+        message: `Password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
+      });
+    }
+
+    const record = await col('password_resets').findOne({ token });
+    if (!record || record.used_at || record.expires_at < Date.now()) {
+      return res.status(401).json({
+        error: 'invalid_token',
+        message: 'This reset link is invalid or has expired. Request a new one.',
+      });
+    }
+
+    const burned = await col('password_resets').updateOne(
+      { token, used_at: null },
+      { $set: { used_at: Date.now() } }
+    );
+    if (!burned.modifiedCount) {
+      return res.status(401).json({ error: 'token_used', message: 'This reset link has already been used.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    await col('users').updateOne({ id: record.user_id }, { $set: { password_hash: passwordHash } });
+
+    return res.json({ message: 'Password updated. You can now sign in.' });
   } catch (err) {
     return next(err);
   }
