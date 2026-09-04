@@ -6,7 +6,7 @@ const express = require('express');
 const session = require('express-session');
 const cors = require('cors');
 
-const { connect } = require('./db');
+const { connect, isDbFallback } = require('./db');
 const MongoSessionStore = require('./session-store');
 const { router: authRouter } = require('./auth');
 const adminRouter = require('./admin');
@@ -28,6 +28,7 @@ const coverLetterRouter = require('./cover-letter');
 const interviewPrepRouter = require('./interview-prep');
 const applicationsRouter = require('./applications');
 const { router: notificationsRouter } = require('./notifications');
+const assistantRouter = require('./assistant');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -96,9 +97,19 @@ app.use('/api/cover-letter', coverLetterRouter);
 app.use('/api/interview-prep', interviewPrepRouter);
 app.use('/api/applications', applicationsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/assistant', assistantRouter);
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, openai_configured: Boolean(process.env.OPENAI_API_KEY) });
+  res.json({
+    ok: true,
+    openai_configured: Boolean(process.env.OPENAI_API_KEY),
+    // true here means this process couldn't reach MongoDB Atlas at startup
+    // and is serving an empty, volatile in-memory store instead — every
+    // account/session it reports is invisible to every other process and
+    // gone on restart. A quick way to catch that class of bug instead of
+    // rediscovering it via "my data disappeared".
+    db_fallback: isDbFallback(),
+  });
 });
 
 app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {

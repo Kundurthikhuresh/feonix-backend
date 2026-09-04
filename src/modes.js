@@ -21,10 +21,13 @@ function formatBlock(lengthRule, pointsRule) {
     pointsRule || '- three to five fragments, six words or fewer each, the beats to hit',
     '[ANSWER]',
     lengthRule,
-    'Natural and conversational — this is read aloud in a live interview, not',
-    'written down. Answer the question that was actually asked, lead with the',
-    'most relevant real experience, and stop. No headings, no bullet lists, no',
-    'sections, no alternative versions.',
+    'That sentence count is a requirement, not a ceiling to undercut — a',
+    'shorter answer is an incomplete answer even if the question sounded',
+    'simple. Natural and conversational — this is read aloud in a live',
+    'interview, not written down. Answer the question that was actually asked,',
+    'lead with the most relevant real experience, and use every sentence you',
+    'were given. No headings, no bullet lists, no sections, no alternative',
+    'versions.',
     'Say it the way a person speaks: no "here are three points", no numbered',
     'run-throughs, no summing up at the end, no corporate polish, no repeating',
     'the question back, and nothing the interviewer did not ask for.',
@@ -88,43 +91,58 @@ function classifyQuestion(question) {
   return 'OPEN_ENDED';
 }
 
-/** Spoken length and shape per question type. */
+/**
+ * Spoken length and shape per question type.
+ *
+ * Each rule opens with "exactly N sentences" rather than a line/word range.
+ * Measured (see explicitLengthRule below): gpt-4o-mini quietly ignores a line
+ * or word target — a 90-130 word range and a 180-260 word range produced the
+ * same ~75-word answer — but holds to an explicit sentence count. So a range
+ * here would silently collapse back to the model's own short default; the
+ * count is what actually buys the longer, more detailed answer.
+ */
 const TYPE_LENGTH_RULES = {
   YES_NO:
-    'What to say out loud: answer directly in the first few words — yes, no, or\n' +
-    'the honest qualifier — then one or two sentences of the specific evidence\n' +
-    'behind it. Three sentences at the very most. Nothing else.',
+    'What to say out loud: exactly 5 sentences. Answer directly in the first\n' +
+    'one — yes, no, or the honest qualifier — then use the rest for the\n' +
+    'specific evidence behind it: where you have done it, how, and what came\n' +
+    'of it. Not just a one-line confirmation.',
   SHORT_DIRECT:
-    'What to say out loud: one to four sentences. Answer the thing asked and\n' +
-    'stop.',
+    'What to say out loud: exactly 5 sentences. Answer the thing asked in\n' +
+    'full, with the concrete detail behind it, then stop.',
   EXPERIENCE:
-    'What to say out loud: say plainly whether you have it and at what depth,\n' +
-    'then the concrete evidence — where, how long, what you actually did with\n' +
-    'it. Two to four sentences.',
+    'What to say out loud: exactly 6 sentences. Say plainly whether you have\n' +
+    'it and at what depth, then the concrete evidence — where, how long, what\n' +
+    'you actually did with it, and a specific example of using it.',
   BEHAVIORAL:
     'What to say out loud: if the documents describe an actual incident that\n' +
-    'fits, tell it the way people tell stories — situation, what you had to do,\n' +
-    'what you did, how it turned out. Five to seven spoken lines, structure\n' +
-    'never announced.\n' +
-    'If they do NOT describe such an incident, do not construct one. Say plainly\n' +
-    'that you would rather not invent a specific example, then describe the kind\n' +
-    'of work you have genuinely done in that area and what it usually involves.\n' +
-    'Three or four sentences, conversational, no apology beyond a short phrase.',
+    'fits, tell it fully in exactly 9 sentences, the way people tell stories —\n' +
+    'situation, what you had to do, what you did step by step, how it turned\n' +
+    'out, and what it taught you. Structure never announced.\n' +
+    'If they do NOT describe such an incident, do not construct one. In exactly\n' +
+    '6 sentences, say plainly that you would rather not invent a specific\n' +
+    'example, then describe at length the kind of work you have genuinely done\n' +
+    'in that area, how you approach it, and what it usually involves.\n' +
+    'Conversational, no apology beyond a short phrase.',
   TECHNICAL:
-    'What to say out loud: lead with the answer, then the reasoning in the\n' +
-    'order you would actually say it. Three to six spoken lines.',
+    'What to say out loud: exactly 8 sentences. Lead with the answer, then use\n' +
+    'the rest to walk through the full reasoning and any relevant trade-offs in\n' +
+    'the order you would actually say them — thorough enough that nothing\n' +
+    'important is left for a follow-up to drag out of you.',
   SCENARIO:
-    'What to say out loud: what you would do first and why, then how you would\n' +
-    'proceed. Four to six spoken lines.',
+    'What to say out loud: exactly 7 sentences. What you would do first and\n' +
+    'why, then each next step in order, including how you would check it\n' +
+    'worked.',
   MOTIVATION:
-    'What to say out loud: a specific, honest reason tied to this role and this\n' +
-    'company, not a general statement about growth. Two to four sentences.',
+    'What to say out loud: exactly 5 sentences. A specific, honest reason tied\n' +
+    'to this role and this company, with the concrete detail that makes it\n' +
+    'credible — not a general statement about growth.',
   CLARIFICATION:
-    'What to say out loud: the interviewer is asking YOU to repeat or clarify\n' +
-    'what you just said. Never ask them to repeat their own question. Open with\n' +
-    'something like "Sure — what I meant was", then say the relevant part of\n' +
-    'your previous answer again, more plainly and more briefly than the first\n' +
-    'time. Two or three sentences. If your previous answer is not in the\n' +
+    'What to say out loud: exactly 4 sentences. The interviewer is asking YOU\n' +
+    'to repeat or clarify what you just said. Never ask them to repeat their\n' +
+    'own question. Open with something like "Sure — what I meant was", then\n' +
+    'say the relevant part of your previous answer again, more plainly and\n' +
+    'with the fuller detail this time. If your previous answer is not in the\n' +
     'conversation above, ask which part they would like you to go over again.',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
@@ -132,13 +150,14 @@ const TYPE_LENGTH_RULES = {
 /** How many [POINTS] fragments suit this type. */
 function pointsRuleFor(type) {
   if (['YES_NO', 'SHORT_DIRECT', 'CLARIFICATION'].includes(type)) {
-    return '- one or two fragments, six words or fewer each, the beats to hit';
+    return '- two to three fragments, six words or fewer each, the beats to hit';
   }
-  return '- three to five fragments, six words or fewer each, the beats to hit';
+  return '- four to six fragments, six words or fewer each, the beats to hit';
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: 5-6 short spoken lines, roughly 90-130 words.';
+  'What to say out loud: exactly 8 sentences — enough to fully cover the point' +
+  ' with real detail, not just the headline of it.';
 
 /**
  * "Answer in 10 lines" is the phrasing users reach for, and gpt-4o-mini simply
@@ -236,12 +255,12 @@ const SHARED_RULES = [
   '  what was actually described and answer about THAT specifically. An',
   '  interviewer often spends a minute setting something out before asking a',
   '  short question about it.',
-  '- Answer the question that was asked, at the size it was asked. A direct or',
-  '  yes/no question ("are you comfortable with that?", "have you used X?")',
-  '  gets a direct answer first — yes, or no, or the honest qualifier — and',
-  '  then a sentence or two of the specific evidence that backs it. Do not',
-  '  inflate a short question into a long structured answer; reply the way a',
-  '  person actually replies in conversation.',
+  '- Answer the question that was asked. A direct or yes/no question ("are you',
+  '  comfortable with that?", "have you used X?") gets a direct answer first —',
+  '  yes, or no, or the honest qualifier — then the rest of the required',
+  '  sentence count is the specific evidence that backs it: where, how, what',
+  '  came of it. The exact sentence count given below is the actual length —',
+  '  meet it in full, do not stop early because the question sounded simple.',
   '- Ground every claim in the documents provided. If they do not support an',
   '  answer, say what is actually there and how it transfers — never invent',
   '  employers, dates, titles, metrics, or projects.',
@@ -287,8 +306,10 @@ const SHARED_RULES = [
   '- Do not fake being human. No filler words, no invented hesitation, no',
   '  deliberate mistakes. Natural means accurate and plainly said.',
   '- No preamble, no "great question", no restating the question.',
-  '- Keep it short enough to say in well under a minute. Cut adjectives,',
-  '  hedges and throat-clearing before cutting substance.',
+  '- Give a full, detailed answer that uses the entire sentence count required',
+  '  below — do not settle for a shorter answer because the point could',
+  '  technically be made in fewer words. If you cut anything to make room, cut',
+  '  adjectives, hedges and throat-clearing, never the substance or examples.',
 ].join('\n');
 
 const SESSION_TYPES = {

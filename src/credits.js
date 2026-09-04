@@ -1,7 +1,7 @@
 const { col, nextId, nowSql, minutesBetween, publicDoc } = require('./db');
 
-const DEFAULT_FREE_TRIALS = 5;
-const TRIAL_MINUTES = 10;
+const DEFAULT_FREE_TRIALS = Number(process.env.DEFAULT_FREE_TRIALS || 5);
+const TRIAL_MINUTES = 30;
 const BILLING_BLOCK_MINUTES = 30;
 const CREDIT_PER_BLOCK = 0.5;
 const UNLIMITED_MINUTES = 24 * 60;
@@ -10,9 +10,17 @@ function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
+// Unlimited session minutes is a billing entitlement, not an admin
+// permission — it must never be implied by role alone. It used to check
+// role === 'owner'/'admin', which meant WHOEVER happens to be the first
+// account in the users collection (an accident of registration order, not
+// a deliberate grant) got free unlimited AI sessions forever, silently
+// skipping the entire trial/credit/payment flow this function exists to
+// enforce. Comp a specific account explicitly with grantCredits/grantTrials
+// instead — those already exist and are visible in the ledger.
 async function isUnlimited(userId) {
   const row = await col('users').findOne({ id: userId });
-  return Boolean(row && row.role === 'owner');
+  return Boolean(row && row.unlimited_sessions === true);
 }
 
 async function creditBalance(userId) {
@@ -100,11 +108,24 @@ async function openSession(userId, sessionId, requestedKind) {
     return { kind: 'unlimited', minutes: UNLIMITED_MINUTES };
   }
 
+  // If a trial or credit transaction was already deducted for this session, return existing allocation
+  if (sessionId) {
+    const existingTrial = await col('trial_transactions').findOne({ user_id: userId, session_id: sessionId });
+    if (existingTrial) {
+      return { kind: 'trial', minutes: TRIAL_MINUTES };
+    }
+    const existingCredit = await col('credit_transactions').findOne({ user_id: userId, session_id: sessionId, type: 'CONSUME' });
+    if (existingCredit) {
+      return { kind: 'paid', minutes: TRIAL_MINUTES };
+    }
+  }
+
   const kind = requestedKind === 'paid' ? 'paid' : 'trial';
 
   if (kind === 'trial') {
-    if ((await trialsRemaining(userId)) <= 0) {
-      const err = new Error('All free trials have been used.');
+    const remaining = await trialsRemaining(userId);
+    if (remaining <= 0) {
+      const err = new Error('All 5 free trial sessions have been used. Payment is required to continue.');
       err.code = 'no_trials_left';
       err.status = 409;
       throw err;
@@ -112,7 +133,7 @@ async function openSession(userId, sessionId, requestedKind) {
     const id = await nextId('trial_transactions');
     await col('trial_transactions').insertOne({
       id, user_id: userId, type: 'TRIAL_CONSUMED', amount: -1,
-      session_id: sessionId, admin_id: null, reason: null, created_at: nowSql(),
+      session_id: sessionId, admin_id: null, reason: 'Session created', created_at: nowSql(),
     });
     return { kind, minutes: TRIAL_MINUTES };
   }

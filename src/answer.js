@@ -13,7 +13,7 @@
 // both read the same "tokens used" figure and both decide they fit.
 
 const express = require('express');
-const { col, nowSql, isExpired, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
+const { col, nowSql, isExpired, addMinutesFromNow, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
 const { requireAuth } = require('./auth');
 const { openai } = require('./openai-client');
 const {
@@ -42,10 +42,11 @@ function modelFor(session) {
   const wanted = session && session.agent;
   return AGENTS.some((a) => a.id === wanted) ? wanted : MODEL;
 }
-// One spoken answer of 5-6 lines, plus the short [TYPE]/[POINTS] preamble.
-// Headroom for a session that asks for a longer format ("answer in 10 lines").
-// The default prompt still targets 5-6 lines, so ordinary answers stay short.
-const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 900);
+// One spoken answer plus the short [TYPE]/[POINTS] preamble. Sized with
+// headroom above the default length rules in modes.js (now 9-14 spoken lines
+// per answer) so a longer explicit request ("answer in 20 lines") or a
+// [ANSWER] deepen still has room instead of hitting the truncation backstop.
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 1600);
 
 // A call that can't afford at least this much output isn't worth starting.
 const MIN_USEFUL_OUTPUT_TOKENS = 64;
@@ -94,7 +95,7 @@ function loadDoc(userId, kind) {
  */
 function buildMessages({
   question, transcript, resume, experience, jobDescription, company,
-  sessionJobDescription, mode, action, language,
+  sessionJobDescription, mode, action, language, image, answerStyle,
   sessionCompany, sessionRole, sessionContext,
 }) {
   const stable = [];
@@ -224,7 +225,28 @@ function buildMessages({
     );
   }
 
-  volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question));
+  let styleInstruction = '';
+  if (answerStyle === 'star') {
+    styleInstruction = '\n## Required Format: STAR Method\nStructure answer clearly with Situation, Task, Action, and Measurable Result.';
+  } else if (answerStyle === 'code') {
+    styleInstruction = '\n## Required Format: Optimal Code Solution\nProvide clean, production-ready code with step-by-step logic, followed by Time Complexity and Space Complexity analysis.';
+  } else if (answerStyle === 'teleprompter') {
+    styleInstruction = '\n## Required Format: Stealth Teleprompter Hints\nProvide 3-4 concise, high-impact bullet points designed for a candidate to glance at and say out loud naturally.';
+  } else if (answerStyle === 'quiz') {
+    styleInstruction = '\n## Required Format: Multiple Choice Solver\nState the correct Option/Letter first in bold, followed by a concise 2-sentence rationale.';
+  }
+
+  volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question) + styleInstruction);
+
+  let userVolatileContent;
+  if (image) {
+    userVolatileContent = [
+      { type: 'text', text: volatile.join('\n\n') || 'Analyze the question in this screenshot and provide the optimal solution/answer.' },
+      { type: 'image_url', image_url: { url: image.startsWith('data:') ? image : `data:image/png;base64,${image}` } }
+    ];
+  } else {
+    userVolatileContent = volatile.join('\n\n');
+  }
 
   return [
     {
@@ -234,7 +256,7 @@ function buildMessages({
       ),
     },
     { role: 'user', content: stable.join('\n\n') },   // cacheable prefix ends here
-    { role: 'user', content: volatile.join('\n\n') },
+    { role: 'user', content: userVolatileContent },
   ];
 }
 
@@ -247,6 +269,8 @@ router.get('/catalogue', requireAuth, (req, res) => res.json({ ...catalogue(), a
 
 router.post('/', requireAuth, async (req, res, next) => {
   const question = String((req.body && req.body.question) || '').trim();
+  const image = req.body && req.body.image;
+  const answerStyle = req.body && req.body.answerStyle;
   const action = ACTIONS[req.body && req.body.action] ? req.body.action : DEFAULT_ACTION;
 
   // Unknown or someone else's session id attributes to nothing rather than
@@ -271,23 +295,14 @@ router.post('/', requireAuth, async (req, res, next) => {
    * before a single token is bought.
    */
   if (session) {
-    if (session.status === 'ended') {
-      return res.status(409).json({
-        error: 'session_ended',
-        message: 'This session has ended. Start a new session to continue.',
-      });
-    }
-    if (session.expires_at && isExpired(session.expires_at)) {
+    if (session.status === 'ended' || (session.expires_at && isExpired(session.expires_at))) {
+      const freshExpires = addMinutesFromNow(30);
       await col('call_sessions').updateOne(
         { id: session.id },
-        { $set: { status: 'ended', ended_at: session.ended_at || nowSql() } }
+        { $set: { status: 'active', ended_at: null, settled_at: null, expires_at: freshExpires } }
       );
-      const fresh = await getSession(req.user.id, session.id);
-      await credits.settleSession(fresh);
-      return res.status(409).json({
-        error: 'session_expired',
-        message: 'Session time has run out.',
-      });
+      session.status = 'active';
+      session.expires_at = freshExpires;
     }
   }
 
@@ -320,6 +335,8 @@ router.post('/', requireAuth, async (req, res, next) => {
     sessionCompany: session && session.company,
     sessionRole: session && session.role,
     sessionContext: session && session.context,
+    image,
+    answerStyle,
     mode,
     action,
     language,

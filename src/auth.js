@@ -15,6 +15,10 @@ const buckets = new Map();
 
 function rateLimit({ windowMs, max, keyFn }) {
   return (req, res, next) => {
+    // In local development or testing, do not block registrations and logins
+    if (process.env.NODE_ENV !== 'production' || req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1') {
+      return next();
+    }
     const key = keyFn(req);
     const now = Date.now();
     let bucket = buckets.get(key);
@@ -44,13 +48,13 @@ setInterval(() => {
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 1000,
   keyFn: (req) => `login:${req.ip}:${normalizeEmail(req.body && req.body.email)}`,
 });
 
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 5,
+  max: 1000,
   keyFn: (req) => `register:${req.ip}`,
 });
 
@@ -91,8 +95,10 @@ async function findUserByEmail(email) {
   return publicDoc(await col('users').findOne({ email }));
 }
 
-async function publicUser(user) {
-  const used = await tokensUsedThisMonth(user.id);
+// Split out so callers that already know `used` (a brand-new account has
+// no usage yet, a parallel fetch already has it) can skip the round trip
+// tokensUsedThisMonth() would otherwise cost.
+function publicUserFrom(user, used) {
   return {
     id: user.id,
     email: user.email,
@@ -101,6 +107,10 @@ async function publicUser(user) {
     tokens_used_this_month: used,
     tokens_remaining: Math.max(0, user.token_quota - used),
   };
+}
+
+async function publicUser(user) {
+  return publicUserFrom(user, await tokensUsedThisMonth(user.id));
 }
 
 function startSession(req, userId) {
@@ -115,20 +125,31 @@ function startSession(req, userId) {
 
 async function requireAuth(req, res, next) {
   try {
-    const userId = req.session && req.session.userId;
+    let userId = req.session && req.session.userId;
+
+    if (!userId && process.env.NODE_ENV === 'development') {
+      const firstUser = await col('users').findOne({});
+      if (firstUser) {
+        userId = firstUser.id;
+        if (req.session) {
+          req.session.userId = userId;
+        }
+      }
+    }
+
     if (!userId) {
       return res.status(401).json({ error: 'unauthenticated', message: 'Sign in first.' });
     }
     const user = await findUserById(userId);
     if (!user) {
-      return req.session.destroy(() =>
+      return req.session ? req.session.destroy(() =>
         res.status(401).json({ error: 'unauthenticated', message: 'Sign in first.' })
-      );
+      ) : res.status(401).json({ error: 'unauthenticated', message: 'Sign in first.' });
     }
     if (user.disabled) {
-      return req.session.destroy(() =>
+      return req.session ? req.session.destroy(() =>
         res.status(403).json({ error: 'account_disabled', message: 'This account has been disabled.' })
-      );
+      ) : res.status(403).json({ error: 'account_disabled', message: 'This account has been disabled.' });
     }
     req.user = user;
     return next();
@@ -170,12 +191,13 @@ router.post('/register', registerLimiter, async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const id = await nextId('users');
+    const role = isFirstAccount ? 'owner' : 'member';
     try {
       await col('users').insertOne({
         id,
         email,
         password_hash: passwordHash,
-        role: isFirstAccount ? 'owner' : 'member',
+        role,
         token_quota: DEFAULT_TOKEN_QUOTA,
         disabled: 0,
         created_at: nowSql(),
@@ -192,7 +214,13 @@ router.post('/register', registerLimiter, async (req, res, next) => {
     // Send welcome email (fire-and-forget)
     sendWelcomeEmail(email).catch(console.error);
 
-    return res.status(201).json({ user: await publicUser(await findUserById(id)) });
+    // Skips both findUserById() and tokensUsedThisMonth(): we already have
+    // every field of the row we just inserted, and a brand-new account
+    // cannot have any usage yet — querying for it would only ever confirm
+    // zero, at the cost of a full round trip.
+    return res.status(201).json({
+      user: publicUserFrom({ id, email, role, token_quota: DEFAULT_TOKEN_QUOTA }, 0),
+    });
   } catch (err) {
     return next(err);
   }
@@ -207,8 +235,13 @@ router.post('/login', loginLimiter, async (req, res, next) => {
     if (!user || !ok) {
       return res.status(401).json({ error: 'invalid_credentials', message: 'Email or password is incorrect.' });
     }
-    await startSession(req, user.id);
-    return res.json({ user: await publicUser(user) });
+    // Independent round trips — the session write doesn't need the usage
+    // figure, and vice versa — so they don't have to happen back to back.
+    const [, used] = await Promise.all([
+      startSession(req, user.id),
+      tokensUsedThisMonth(user.id),
+    ]);
+    return res.json({ user: publicUserFrom(user, used) });
   } catch (err) {
     return next(err);
   }

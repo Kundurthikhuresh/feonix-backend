@@ -97,6 +97,18 @@ router.post('/', requireAuth, async (req, res, next) => {
     }
 
     const id = await nextId('call_sessions');
+
+    // Deduct 1 trial credit (or verify paid credit entitlement) when creating a session
+    let opened;
+    try {
+      opened = await credits.openSession(req.user.id, id, billing);
+    } catch (err) {
+      return res.status(err.status || 409).json({
+        error: err.code || 'no_trials_left',
+        message: err.message || 'All 5 free trial sessions have been used. Payment is required to continue.',
+      });
+    }
+
     const session = {
       id,
       user_id: req.user.id,
@@ -113,14 +125,14 @@ router.post('/', requireAuth, async (req, res, next) => {
       save_transcript: saveTranscript,
       context,
       agent,
-      plan: null,
+      plan: opened.kind === 'trial' ? 'free' : 'full',
       expires_at: null,
-      billing_kind: billing,
+      billing_kind: opened.kind,
       settled_at: null,
       notes: null,
     };
     await col('call_sessions').insertOne(session);
-    return res.status(201).json({ session: await enrichSession(session) });
+    return res.status(201).json({ session: await enrichSession(session), account: await credits.accountSummary(req.user.id) });
   } catch (err) {
     next(err);
   }
@@ -150,21 +162,6 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
-    if (owned.status === 'ended') {
-      return res.status(409).json({ error: 'already_ended', message: 'This session has already ended.' });
-    }
-    if (owned.expires_at && isExpired(owned.expires_at)) {
-      await col('call_sessions').updateOne(
-        { id: owned.id },
-        { $set: { status: 'ended', ended_at: owned.ended_at || nowSql() } }
-      );
-      const fresh = await ownedSession(req.user.id, owned.id);
-      await credits.settleSession(fresh);
-      return res.status(409).json({
-        error: 'session_expired',
-        message: 'This session’s time has already run out. Start a new session to continue.',
-      });
-    }
 
     const requested = String((req.body && req.body.billing) || '')
       || (owned.billing_kind || (String(req.body && req.body.plan) === 'full' ? 'paid' : 'trial'));
@@ -173,17 +170,22 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     try {
       opened = await credits.openSession(req.user.id, owned.id, requested);
     } catch (err) {
-      return res.status(err.status || 400).json({ error: err.code || 'cannot_start', message: err.message });
+      return res.status(err.status || 409).json({
+        error: err.code || 'no_trials_left',
+        message: err.message || 'All 5 free trial sessions have been used. Payment is required to continue.',
+      });
     }
 
     const forceKind = opened.kind === 'unlimited';
     const $set = {
       status: 'active',
       plan: owned.plan || (opened.kind === 'trial' ? 'free' : 'full'),
+      started_at: nowSql(),
+      expires_at: addMinutesFromNow(opened.minutes || 30),
+      ended_at: null,
+      settled_at: null,
     };
     if (forceKind || !owned.billing_kind) $set.billing_kind = opened.kind;
-    if (!owned.started_at) $set.started_at = nowSql();
-    if (!owned.expires_at) $set.expires_at = addMinutesFromNow(opened.minutes);
 
     await col('call_sessions').updateOne({ id: owned.id }, { $set });
     res.json({ session: await enrichSession(await ownedSession(req.user.id, owned.id)) });
