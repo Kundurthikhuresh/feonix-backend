@@ -86,17 +86,181 @@ function publicDoc(doc) {
   return rest;
 }
 
+// In-memory fallback store for offline / timeout development
+const memoryStore = new Map();
+const fallbackCounters = {};
+let isFallback = false;
+
+class MemoryCollection {
+  constructor(name) {
+    this.name = name;
+    if (!memoryStore.has(name)) {
+      memoryStore.set(name, []);
+    }
+  }
+
+  get items() {
+    return memoryStore.get(this.name);
+  }
+
+  _matches(item, query) {
+    if (!query || Object.keys(query).length === 0) return true;
+    for (const key of Object.keys(query)) {
+      if (key === '_id' || key === 'id' || key === 'sid' || key === 'email' || key === 'user_id') {
+        if (item[key] !== query[key]) return false;
+      } else if (typeof query[key] === 'object' && query[key] !== null) {
+        if (query[key].$gte !== undefined && !(item[key] >= query[key].$gte)) return false;
+        if (query[key].$lte !== undefined && !(item[key] <= query[key].$lte)) return false;
+        if (query[key].$gt !== undefined && !(item[key] > query[key].$gt)) return false;
+        if (query[key].$lt !== undefined && !(item[key] < query[key].$lt)) return false;
+      } else {
+        if (item[key] !== query[key]) return false;
+      }
+    }
+    return true;
+  }
+
+  async createIndex() {
+    return true;
+  }
+
+  async findOne(query) {
+    return this.items.find((item) => this._matches(item, query)) || null;
+  }
+
+  find(query = {}) {
+    let results = this.items.filter((item) => this._matches(item, query));
+    return {
+      sort(sortObj) {
+        return this;
+      },
+      limit(n) {
+        results = results.slice(0, n);
+        return this;
+      },
+      async next() {
+        return results[0] || null;
+      },
+      async toArray() {
+        return results;
+      },
+    };
+  }
+
+  async insertOne(doc) {
+    const copy = { ...doc };
+    if (!copy._id) copy._id = Math.random().toString(36).substring(2);
+    this.items.push(copy);
+    return { insertedId: copy._id };
+  }
+
+  async updateOne(query, update, opts = {}) {
+    let index = this.items.findIndex((item) => this._matches(item, query));
+    if (index === -1 && opts.upsert) {
+      const newDoc = { ...(query || {}), ...(update.$set || update || {}) };
+      this.items.push(newDoc);
+      return { upsertedCount: 1, modifiedCount: 0 };
+    }
+    if (index !== -1) {
+      if (update.$set) Object.assign(this.items[index], update.$set);
+      if (update.$inc) {
+        for (const [k, v] of Object.entries(update.$inc)) {
+          this.items[index][k] = (this.items[index][k] || 0) + v;
+        }
+      }
+      return { modifiedCount: 1 };
+    }
+    return { modifiedCount: 0 };
+  }
+
+  async deleteOne(query) {
+    const index = this.items.findIndex((item) => this._matches(item, query));
+    if (index !== -1) {
+      this.items.splice(index, 1);
+      return { deletedCount: 1 };
+    }
+    return { deletedCount: 0 };
+  }
+
+  async deleteMany(query) {
+    const prevLen = this.items.length;
+    const remaining = this.items.filter((item) => !this._matches(item, query));
+    memoryStore.set(this.name, remaining);
+    return { deletedCount: prevLen - remaining.length };
+  }
+
+  async countDocuments(query) {
+    if (!query || Object.keys(query).length === 0) return this.items.length;
+    return this.items.filter((item) => this._matches(item, query)).length;
+  }
+
+  async findOneAndUpdate(query, update, opts = {}) {
+    let doc = this.items.find((item) => this._matches(item, query));
+    if (!doc && opts.upsert) {
+      doc = { ...query };
+      this.items.push(doc);
+    }
+    if (doc) {
+      if (update.$inc) {
+        for (const [k, v] of Object.entries(update.$inc)) {
+          doc[k] = (doc[k] || 0) + v;
+        }
+      }
+      if (update.$set) Object.assign(doc, update.$set);
+    }
+    return doc;
+  }
+
+  aggregate(pipeline = []) {
+    return {
+      async toArray() {
+        return [{ total: 0 }];
+      },
+    };
+  }
+}
+
 async function connect() {
   if (db) return db;
   const uri = process.env.MONGODB_URI;
   if (!uri) {
-    console.error('MONGODB_URI is required (MongoDB Atlas connection string).');
-    process.exit(1);
+    console.warn('MONGODB_URI not provided. Running in memory fallback mode.');
+    isFallback = true;
+    db = { collection: (name) => new MemoryCollection(name) };
+    return db;
   }
-  client = new MongoClient(uri, { secureContext: MONGO_SECURE_CONTEXT });
-  await client.connect();
-  db = client.db(process.env.MONGODB_DB || 'feonixai');
-  await ensureIndexes();
+  // 5s was tripping on ordinary network latency to Atlas on this box, not
+  // just real outages — every trip into the fallback silently swaps real
+  // user data for a volatile in-memory store for the rest of the process's
+  // life, which is a much worse failure mode than waiting a few seconds
+  // longer to connect. 15s is what direct connection attempts from this
+  // machine reliably succeed within; one retry absorbs a single dropped
+  // handshake before accepting the connection has actually failed.
+  const CONNECT_TIMEOUT_MS = 15000;
+  const CONNECT_ATTEMPTS = 2;
+
+  for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+    try {
+      client = new MongoClient(uri, {
+        secureContext: MONGO_SECURE_CONTEXT,
+        serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
+        connectTimeoutMS: CONNECT_TIMEOUT_MS,
+      });
+      await client.connect();
+      db = client.db(process.env.MONGODB_DB || 'feonixai');
+      await ensureIndexes();
+      console.log('Successfully connected to MongoDB Atlas.');
+      return db;
+    } catch (err) {
+      console.warn(`⚠️ [DB Warning] MongoDB Atlas connection attempt ${attempt}/${CONNECT_ATTEMPTS} failed (${err.message}).`);
+      try { await client?.close(); } catch { /* nothing to close */ }
+    }
+  }
+
+  console.warn('⚠️ Switching to in-memory store so Feonix AI API & Assistant run smoothly.');
+  console.warn('⚠️ This process will NOT see real user data until it is restarted with a working connection.');
+  isFallback = true;
+  db = { collection: (name) => new MemoryCollection(name) };
   return db;
 }
 
@@ -156,6 +320,10 @@ async function ensureIndexes() {
 }
 
 async function nextId(name) {
+  if (isFallback) {
+    fallbackCounters[name] = (fallbackCounters[name] || 0) + 1;
+    return fallbackCounters[name];
+  }
   const result = await col('counters').findOneAndUpdate(
     { _id: name },
     { $inc: { seq: 1 } },
@@ -229,6 +397,7 @@ async function sessionTokensUsed(sessionId) {
 module.exports = {
   connect,
   col,
+  isDbFallback: () => isFallback,
   nextId,
   nowSql,
   startOfMonthSql,
