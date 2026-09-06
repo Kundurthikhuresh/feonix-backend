@@ -50,8 +50,8 @@ router.post('/users', async (req, res, next) => {
     if (!email || !email.includes('@')) {
       return res.status(400).json({ error: 'invalid_email' });
     }
-    if (password.length < 10) {
-      return res.status(400).json({ error: 'weak_password', message: 'Minimum 10 characters.' });
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: 'weak_password', message: `Minimum ${MIN_PASSWORD_LENGTH} characters.` });
     }
     if (!Number.isInteger(quota) || quota < 0) {
       return res.status(400).json({ error: 'invalid_quota', message: 'token_quota must be a non-negative integer.' });

@@ -122,7 +122,16 @@ function promptWordsets(prompt) {
  */
 function isPromptEcho(sentence, wordsets) {
   const w = words(sentence);
-  if (!w.length) return true;
+  // words() only keeps [a-z0-9] — a sentence in Telugu, Korean, Arabic, or
+  // any other non-Latin script this app's own session-language list
+  // supports reduces to zero words here every time, regardless of content.
+  // That used to be read as "the prompt-echo check found nothing to compare,
+  // so treat it as echo" — which silently dropped every real question asked
+  // in a non-Latin-script language, every chunk, for the whole session. The
+  // prompt is plain English; a sentence with no Latin words in it cannot be
+  // an echo of it. Only genuine silence (nothing left after trimming at all)
+  // still counts as echo/filler here.
+  if (!w.length) return !sentence.trim();
   return wordsets.some((set) => {
     const shared = w.filter((x) => set.has(x)).length;
     // Most of the sentence is prompt vocabulary, and it covers most of a
@@ -146,7 +155,12 @@ const HALLUCINATIONS = [
 
 function isHallucination(sentence) {
   const n = sentence.trim().toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
-  if (!n) return true;
+  // Same non-Latin-script gap as isPromptEcho above: stripping to [a-z0-9]
+  // empties out any Telugu/Korean/Arabic/etc. sentence regardless of what it
+  // actually says. HALLUCINATIONS is an English-only list, so a sentence
+  // that has real (non-Latin) content left after only whitespace/punctuation
+  // is trimmed cannot be one of these phrases — only true silence should be.
+  if (!n) return !sentence.trim();
   return HALLUCINATIONS.some((h) => n === h.replace(/[^a-z0-9 ]+/g, '').trim());
 }
 

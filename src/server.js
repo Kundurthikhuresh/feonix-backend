@@ -33,14 +33,28 @@ const assistantRouter = require('./assistant');
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
 const isProduction = process.env.NODE_ENV === 'production';
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3001';
 
 app.disable('x-powered-by');
 
 if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY));
 
+const allowedOrigins = [
+  FRONTEND_ORIGIN,
+  'http://localhost:3001',
+  'http://localhost:3000',
+  'http://127.0.0.1:3001',
+  'http://127.0.0.1:3000',
+].filter(Boolean);
+
 app.use(cors({
-  origin: FRONTEND_ORIGIN,
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
   credentials: true,
 }));
 
@@ -122,15 +136,23 @@ app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
   }
 
   const files = fs.readdirSync(distDir);
-  let targetFile = null;
+  let candidates = [];
   if (platform === 'mac' || platform === 'dmg') {
-    targetFile = files.find((f) => f.endsWith('.dmg') || f.endsWith('.zip'));
+    candidates = files.filter((f) => f.endsWith('.dmg') || f.endsWith('.zip'));
   } else if (platform === 'win' || platform === 'exe') {
-    targetFile = files.find((f) => f.endsWith('.exe'));
+    candidates = files.filter((f) => f.endsWith('.exe') && !f.startsWith('__uninstaller'));
   }
-  if (!targetFile) {
+  if (!candidates.length) {
     return res.status(404).send(`No installer binary found for ${platform}.`);
   }
+  // electron-builder never cleans up a previous version's output in dist/,
+  // so multiple installer files can sit side by side — picking the first
+  // one alphabetically ("...0.1.0.exe" before "...0.2.0.exe") served the
+  // same stale build no matter how many times a newer one was built. The
+  // most recently modified file is always the one from the last build.
+  const targetFile = candidates
+    .map((f) => ({ f, mtime: fs.statSync(path.join(distDir, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)[0].f;
   return res.download(path.join(distDir, targetFile));
 });
 

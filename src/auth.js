@@ -5,7 +5,7 @@ const { col, nextId, nowSql, tokensUsedThisMonth, publicDoc } = require('./db');
 const { sendWelcomeEmail, sendPasswordResetEmail } = require('./mailer');
 
 const BCRYPT_ROUNDS = 12;
-const MIN_PASSWORD_LENGTH = 10;
+const MIN_PASSWORD_LENGTH = 6;
 const MAX_PASSWORD_LENGTH = 200;
 const DEFAULT_TOKEN_QUOTA = Number(process.env.DEFAULT_TOKEN_QUOTA || 100000);
 const DUMMY_HASH = bcrypt.hashSync('no-user-matched-this-password', BCRYPT_ROUNDS);
@@ -177,7 +177,7 @@ router.post('/register', registerLimiter, async (req, res, next) => {
     if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: 'weak_password',
-        message: `Password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
+        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
       });
     }
 
@@ -271,7 +271,7 @@ router.post('/forgot-password', forgotPasswordLimiter, async (req, res, next) =>
         created_at: nowSql(),
       });
 
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
       const resetUrl = `${appUrl}/reset-password?token=${token}`;
       sendPasswordResetEmail(email, resetUrl).catch(console.error);
     }
@@ -295,7 +295,7 @@ router.post('/reset-password', resetPasswordLimiter, async (req, res, next) => {
     if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
       return res.status(400).json({
         error: 'weak_password',
-        message: `Password must be ${MIN_PASSWORD_LENGTH}-${MAX_PASSWORD_LENGTH} characters.`,
+        message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
       });
     }
 

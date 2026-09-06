@@ -1,7 +1,7 @@
-const { col, nextId, nowSql, minutesBetween, publicDoc } = require('./db');
+const { col, nextId, nowSql, isExpired, minutesBetween, publicDoc } = require('./db');
 
 const DEFAULT_FREE_TRIALS = Number(process.env.DEFAULT_FREE_TRIALS || 5);
-const TRIAL_MINUTES = 30;
+const TRIAL_MINUTES = 5;
 const BILLING_BLOCK_MINUTES = 30;
 const CREDIT_PER_BLOCK = 0.5;
 const UNLIMITED_MINUTES = 24 * 60;
@@ -108,15 +108,19 @@ async function openSession(userId, sessionId, requestedKind) {
     return { kind: 'unlimited', minutes: UNLIMITED_MINUTES };
   }
 
-  // If a trial or credit transaction was already deducted for this session, return existing allocation
+  // If a trial or credit transaction was already deducted for this session and it is still valid, return existing allocation
   if (sessionId) {
-    const existingTrial = await col('trial_transactions').findOne({ user_id: userId, session_id: sessionId });
-    if (existingTrial) {
-      return { kind: 'trial', minutes: TRIAL_MINUTES };
-    }
-    const existingCredit = await col('credit_transactions').findOne({ user_id: userId, session_id: sessionId, type: 'CONSUME' });
-    if (existingCredit) {
-      return { kind: 'paid', minutes: TRIAL_MINUTES };
+    const sessionDoc = await col('call_sessions').findOne({ id: Number(sessionId), user_id: userId });
+    const isEnded = sessionDoc && (sessionDoc.status === 'ended' || (sessionDoc.expires_at && isExpired(sessionDoc.expires_at)));
+    if (sessionDoc && !isEnded) {
+      const existingTrial = await col('trial_transactions').findOne({ user_id: userId, session_id: Number(sessionId) });
+      if (existingTrial) {
+        return { kind: 'trial', minutes: TRIAL_MINUTES };
+      }
+      const existingCredit = await col('credit_transactions').findOne({ user_id: userId, session_id: Number(sessionId), type: 'CONSUME' });
+      if (existingCredit) {
+        return { kind: 'paid', minutes: TRIAL_MINUTES };
+      }
     }
   }
 
