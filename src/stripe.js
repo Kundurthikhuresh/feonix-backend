@@ -114,7 +114,7 @@ router.post('/create-checkout-session', requireAuth, async (req, res, next) => {
     }
 
     const user = await col('users').findOne({ id: req.user.id });
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
 
     // Find or create Stripe customer
     let customerId = user.stripe_customer_id;
@@ -168,7 +168,7 @@ router.post('/create-portal-session', requireAuth, async (req, res, next) => {
       });
     }
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: user.stripe_customer_id,
       return_url: `${appUrl}/billing`,

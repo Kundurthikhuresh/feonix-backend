@@ -53,6 +53,11 @@ const MIN_USEFUL_OUTPUT_TOKENS = 64;
 
 const MAX_QUESTION_CHARS = 2000;
 const MAX_TRANSCRIPT_CHARS = 6000;
+// Each is already downscaled/compressed client-side (see
+// frontend/src/services/screenshotService.js), so this is a sanity cap
+// against an oversized or malformed request rather than a real-world limit
+// anyone taking screenshots by hand would ever hit.
+const MAX_IMAGES = 8;
 const MAX_DOC_CHARS = 8000;
 
 const router = express.Router();
@@ -95,7 +100,7 @@ function loadDoc(userId, kind) {
  */
 function buildMessages({
   question, transcript, resume, experience, jobDescription, company,
-  sessionJobDescription, mode, action, language, image, answerStyle,
+  sessionJobDescription, mode, action, language, images, answerStyle,
   sessionCompany, sessionRole, sessionContext,
 }) {
   const stable = [];
@@ -239,10 +244,18 @@ function buildMessages({
   volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question) + styleInstruction);
 
   let userVolatileContent;
-  if (image) {
+  if (images && images.length) {
+    const promptText = volatile.join('\n\n') || (
+      images.length > 1
+        ? `Analyze the question across these ${images.length} screenshots and provide the optimal solution/answer.`
+        : 'Analyze the question in this screenshot and provide the optimal solution/answer.'
+    );
     userVolatileContent = [
-      { type: 'text', text: volatile.join('\n\n') || 'Analyze the question in this screenshot and provide the optimal solution/answer.' },
-      { type: 'image_url', image_url: { url: image.startsWith('data:') ? image : `data:image/png;base64,${image}` } }
+      { type: 'text', text: promptText },
+      ...images.map((img) => ({
+        type: 'image_url',
+        image_url: { url: img.startsWith('data:') ? img : `data:image/png;base64,${img}` },
+      })),
     ];
   } else {
     userVolatileContent = volatile.join('\n\n');
@@ -269,7 +282,8 @@ router.get('/catalogue', requireAuth, (req, res) => res.json({ ...catalogue(), a
 
 router.post('/', requireAuth, async (req, res, next) => {
   const question = String((req.body && req.body.question) || '').trim();
-  const image = req.body && req.body.image;
+  const rawImages = (req.body && req.body.images) || (req.body && req.body.image ? [req.body.image] : []);
+  const images = Array.isArray(rawImages) ? rawImages.filter(Boolean).slice(0, MAX_IMAGES) : [];
   const answerStyle = req.body && req.body.answerStyle;
   const action = ACTIONS[req.body && req.body.action] ? req.body.action : DEFAULT_ACTION;
 
@@ -295,14 +309,17 @@ router.post('/', requireAuth, async (req, res, next) => {
    * before a single token is bought.
    */
   if (session) {
-    if (session.status === 'ended' || (session.expires_at && isExpired(session.expires_at))) {
-      const freshExpires = addMinutesFromNow(30);
+    if (session.status === 'ended') {
+      return res.status(409).json({ error: 'session_ended', message: 'This session has ended.' });
+    }
+    if (session.expires_at && isExpired(session.expires_at)) {
       await col('call_sessions').updateOne(
         { id: session.id },
-        { $set: { status: 'active', ended_at: null, settled_at: null, expires_at: freshExpires } }
+        { $set: { status: 'ended', ended_at: session.ended_at || nowSql() } }
       );
-      session.status = 'active';
-      session.expires_at = freshExpires;
+      const fresh = await col('call_sessions').findOne({ id: session.id });
+      await credits.settleSession(fresh);
+      return res.status(409).json({ error: 'session_expired', message: 'Session time has run out.' });
     }
   }
 
@@ -335,7 +352,7 @@ router.post('/', requireAuth, async (req, res, next) => {
     sessionCompany: session && session.company,
     sessionRole: session && session.role,
     sessionContext: session && session.context,
-    image,
+    images,
     answerStyle,
     mode,
     action,
@@ -344,7 +361,19 @@ router.post('/', requireAuth, async (req, res, next) => {
 
   /* ---- token safety-rail (credits are the real entitlement) --------- */
 
-  const promptEstimate = estimateTokens(messages.map((m) => m.content).join('\n'));
+  // Multimodal message content is an array of parts (text + one image_url
+  // per attached screenshot), not a string — joining it directly used to
+  // stringify each part as "[object Object]", silently estimating ~0 real
+  // tokens for however many images were attached. That under-count let a
+  // multi-screenshot request slip past the quota gate below almost for
+  // free. ~1100 tokens/image is a conservative estimate for how OpenAI
+  // actually tokenizes an image in this size range — good enough for a
+  // safety rail, not meant to match billed usage exactly.
+  const TOKENS_PER_IMAGE_ESTIMATE = 1100;
+  const textContent = messages
+    .map((m) => (typeof m.content === 'string' ? m.content : (m.content || []).filter((p) => p.type === 'text').map((p) => p.text).join('\n')))
+    .join('\n');
+  const promptEstimate = estimateTokens(textContent) + images.length * TOKENS_PER_IMAGE_ESTIMATE;
   const used = await tokensUsedThisMonth(req.user.id);
   const gate = quota.check(req.user, used, promptEstimate + MIN_USEFUL_OUTPUT_TOKENS);
 

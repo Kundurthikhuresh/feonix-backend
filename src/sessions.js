@@ -19,6 +19,27 @@ const router = express.Router();
 async function enrichSession(session) {
   if (!session) return null;
   const s = publicDoc(session);
+  if (s.expires_at) {
+    const expired = isExpired(s.expires_at);
+    if (expired && s.status !== 'ended') {
+      s.status = 'ended';
+      s.ended_at = s.ended_at || nowSql();
+      await col('call_sessions').updateOne(
+        { id: s.id },
+        { $set: { status: 'ended', ended_at: s.ended_at } }
+      );
+      await credits.settleSession(s);
+    } else if (!expired && s.status === 'ended') {
+      // Still within the 5-minute window! Keep session active so it can be resumed
+      s.status = 'active';
+      s.ended_at = null;
+      s.settled_at = null;
+      await col('call_sessions').updateOne(
+        { id: s.id },
+        { $set: { status: 'active', ended_at: null, settled_at: null } }
+      );
+    }
+  }
   const [tokens_used, answer_count, line_count] = await Promise.all([
     sessionTokensUsed(s.id),
     col('answers').countDocuments({ session_id: s.id }),
@@ -35,9 +56,12 @@ router.get('/', requireAuth, async (req, res, next) => {
   try {
     const status = String(req.query.status || 'all');
     const filter = { user_id: req.user.id };
-    if (status !== 'all') filter.status = status;
     const rows = await col('call_sessions').find(filter).sort({ id: -1 }).toArray();
-    res.json({ sessions: await Promise.all(rows.map(enrichSession)) });
+    let enriched = await Promise.all(rows.map(enrichSession));
+    if (status !== 'all') {
+      enriched = enriched.filter(s => s.status === status);
+    }
+    res.json({ sessions: enriched });
   } catch (err) {
     next(err);
   }
@@ -177,11 +201,12 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     }
 
     const forceKind = opened.kind === 'unlimited';
+    const isRestarting = !owned.expires_at || isExpired(owned.expires_at) || owned.status === 'ended' || owned.status === 'ready';
     const $set = {
       status: 'active',
       plan: owned.plan || (opened.kind === 'trial' ? 'free' : 'full'),
-      started_at: nowSql(),
-      expires_at: addMinutesFromNow(opened.minutes || 30),
+      started_at: isRestarting ? nowSql() : (owned.started_at || nowSql()),
+      expires_at: isRestarting ? addMinutesFromNow(opened.minutes || 5) : owned.expires_at,
       ended_at: null,
       settled_at: null,
     };

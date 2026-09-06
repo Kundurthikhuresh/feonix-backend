@@ -89,7 +89,7 @@ async function sendWelcomeEmail(to, name = '') {
         <li>🎤 <strong>AI Interview Prep</strong> — Practice questions with real-time scoring</li>
       </ul>
       <div style="margin-top: 25px;">
-        <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/profile" style="background: linear-gradient(135deg, #00f5ff, #0891b2); color: #0a0b0f; font-weight: bold; text-decoration: none; padding: 12px 24px; border-radius: 8px; display: inline-block;">
+        <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/profile" style="background: linear-gradient(135deg, #00f5ff, #0891b2); color: #0a0b0f; font-weight: bold; text-decoration: none; padding: 12px 24px; border-radius: 8px; display: inline-block;">
           Set Up Your Profile →
         </a>
       </div>
@@ -140,7 +140,7 @@ async function sendSubscriptionEmail(to, plan) {
         You now have access to higher AI generation quotas and priority analysis speeds.
       </p>
       <div style="margin-top: 20px;">
-        <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/billing" style="background: #00f5ff; color: #0a0b0f; font-weight: bold; text-decoration: none; padding: 10px 20px; border-radius: 6px; display: inline-block;">
+        <a href="${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/billing" style="background: #00f5ff; color: #0a0b0f; font-weight: bold; text-decoration: none; padding: 10px 20px; border-radius: 6px; display: inline-block;">
           Manage Subscription →
         </a>
       </div>
