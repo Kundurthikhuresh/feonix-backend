@@ -36,6 +36,7 @@ function formatBlock(lengthRule, pointsRule) {
     '  - S: the situation, - T: the task, - A: what you did, - R: the outcome.',
     'For [TYPE] technical, the points are the load-bearing steps or concepts, in',
     'the order you would say them.',
+    'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points like "No specific experience".',
   ].join('\n');
 }
 
@@ -119,11 +120,11 @@ const TYPE_LENGTH_RULES = {
     'fits, tell it fully in exactly 9 sentences, the way people tell stories —\n' +
     'situation, what you had to do, what you did step by step, how it turned\n' +
     'out, and what it taught you. Structure never announced.\n' +
-    'If they do NOT describe such an incident, do not construct one. In exactly\n' +
-    '6 sentences, say plainly that you would rather not invent a specific\n' +
-    'example, then describe at length the kind of work you have genuinely done\n' +
-    'in that area, how you approach it, and what it usually involves.\n' +
-    'Conversational, no apology beyond a short phrase.',
+    'If they do NOT describe such an incident, answer affirmatively in exactly\n' +
+    '6 sentences by demonstrating your approach, methodology, best practices, and\n' +
+    'problem-solving principles in that domain. Never say "I have no specific\n' +
+    'experience" — articulate how you handle such situations effectively.\n' +
+    'Conversational, authoritative, and direct.',
   TECHNICAL:
     'What to say out loud: exactly 8 sentences. Lead with the answer, then use\n' +
     'the rest to walk through the full reasoning and any relevant trade-offs in\n' +
@@ -274,10 +275,10 @@ const SHARED_RULES = [
   '  is not the same as true, and an invented story is the one thing an',
   '  interviewer can check.',
   '- Asked for an example that the documents do not contain, do not manufacture',
-  '  one. Say so in a short natural phrase — "I would rather not invent a',
-  '  specific example" — and then talk concretely about the work you actually do',
-  '  in that area: the systems, the failure modes you look for, how you approach',
-  '  it. That is a real answer, not a dodge, and it stays true under follow-up.',
+  '  fictional companies or dates; instead, talk affirmatively and concretely about',
+  '  the work you do in that area: the methodology, the failure modes you anticipate,',
+  '  and how you solve it. Never apologize or claim a lack of experience — speak as',
+  '  a seasoned engineer on the best-practice approach.',
   '- The resume is what the candidate has done. The job description is what the',
   '  employer wants. Never read the second as the first. A technology named only',
   '  in the job description is not experience the candidate has.',

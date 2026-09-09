@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const { col, nextId, nowSql, tokensUsedThisMonth, publicDoc } = require('./db');
 const { sendWelcomeEmail, sendPasswordResetEmail } = require('./mailer');
+const { rateLimit } = require('./rateLimit');
 
 const BCRYPT_ROUNDS = 12;
 const MIN_PASSWORD_LENGTH = 6;
@@ -11,63 +12,37 @@ const DEFAULT_TOKEN_QUOTA = Number(process.env.DEFAULT_TOKEN_QUOTA || 100000);
 const DUMMY_HASH = bcrypt.hashSync('no-user-matched-this-password', BCRYPT_ROUNDS);
 
 const router = express.Router();
-const buckets = new Map();
-
-function rateLimit({ windowMs, max, keyFn }) {
-  return (req, res, next) => {
-    // In local development or testing, do not block registrations and logins
-    if (process.env.NODE_ENV !== 'production' || req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1') {
-      return next();
-    }
-    const key = keyFn(req);
-    const now = Date.now();
-    let bucket = buckets.get(key);
-    if (!bucket || bucket.resetAt <= now) {
-      bucket = { count: 0, resetAt: now + windowMs };
-      buckets.set(key, bucket);
-    }
-    bucket.count += 1;
-    if (bucket.count > max) {
-      const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
-      res.set('Retry-After', String(retryAfter));
-      return res.status(429).json({
-        error: 'too_many_attempts',
-        message: `Too many attempts. Try again in ${retryAfter}s.`,
-      });
-    }
-    return next();
-  };
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, bucket] of buckets) {
-    if (bucket.resetAt <= now) buckets.delete(key);
-  }
-}, 10 * 60 * 1000).unref();
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
   keyFn: (req) => `login:${req.ip}:${normalizeEmail(req.body && req.body.email)}`,
+  errorCode: 'too_many_attempts',
+  messagePrefix: 'Too many attempts',
 });
 
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 1000,
   keyFn: (req) => `register:${req.ip}`,
+  errorCode: 'too_many_attempts',
+  messagePrefix: 'Too many attempts',
 });
 
 const forgotPasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
   keyFn: (req) => `forgot:${req.ip}:${normalizeEmail(req.body && req.body.email)}`,
+  errorCode: 'too_many_attempts',
+  messagePrefix: 'Too many attempts',
 });
 
 const resetPasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   keyFn: (req) => `reset:${req.ip}`,
+  errorCode: 'too_many_attempts',
+  messagePrefix: 'Too many attempts',
 });
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, matches the email copy
@@ -271,9 +246,19 @@ router.post('/forgot-password', forgotPasswordLimiter, async (req, res, next) =>
         created_at: nowSql(),
       });
 
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
       const resetUrl = `${appUrl}/reset-password?token=${token}`;
-      sendPasswordResetEmail(email, resetUrl).catch(console.error);
+      try {
+        const expiresInMinutes = Math.round(RESET_TOKEN_TTL_MS / 60000);
+        const mailResult = await sendPasswordResetEmail(email, resetUrl, { expiresInMinutes });
+        if (!mailResult.success) {
+          console.error('Password reset email failed:', mailResult.error);
+        } else {
+          console.log('Password reset email successfully sent to', email);
+        }
+      } catch (mailErr) {
+        console.error('Failed to send password reset email:', mailErr);
+      }
     }
 
     // Always respond the same way whether or not the account exists, so

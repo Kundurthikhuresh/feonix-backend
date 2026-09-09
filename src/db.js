@@ -316,7 +316,6 @@ async function ensureIndexes() {
   await col('notifications').createIndex({ user_id: 1, read: 1, created_at: -1 });
   await col('ai_usage').createIndex({ id: 1 }, { unique: true });
   await col('ai_usage').createIndex({ user_id: 1, feature: 1, created_at: -1 });
-  await col('users').createIndex({ stripe_customer_id: 1 }, { sparse: true });
 }
 
 async function nextId(name) {

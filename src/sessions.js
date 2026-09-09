@@ -1,9 +1,9 @@
 const express = require('express');
-const { col, nextId, nowSql, isExpired, addMinutesFromNow, publicDoc, sessionTokensUsed, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
+const { col, nextId, nowSql, isExpired, addMinutesFromNow, minutesBetween, publicDoc, sessionTokensUsed, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
 const { requireAuth } = require('./auth');
 const credits = require('./credits');
-const { transcribeAudio, MODEL: TRANSCRIBE_MODEL, RESERVE_TOKENS: TRANSCRIBE_RESERVE_TOKENS } = require('./transcribe');
-const { buildMessages, classifyQuestion, modelFor } = require('./answer');
+const { transcribeAudio, transcribeLimiter, MODEL: TRANSCRIBE_MODEL, RESERVE_TOKENS: TRANSCRIBE_RESERVE_TOKENS } = require('./transcribe');
+const { buildMessages, classifyQuestion, modelFor, answerLimiter } = require('./answer');
 const { saveAnswer } = require('./history');
 const { openai } = require('./openai-client');
 const quota = require('./quota');
@@ -19,25 +19,17 @@ const router = express.Router();
 async function enrichSession(session) {
   if (!session) return null;
   const s = publicDoc(session);
-  if (s.expires_at) {
-    const expired = isExpired(s.expires_at);
-    if (expired && s.status !== 'ended') {
+  if (s.expires_at || s.started_at) {
+    const expiredByExpiresAt = s.expires_at && isExpired(s.expires_at);
+    const expiredByStartedAt = s.started_at && minutesBetween(s.started_at, nowSql()) >= 15;
+    if ((expiredByExpiresAt || expiredByStartedAt) && s.status !== 'ended') {
       s.status = 'ended';
-      s.ended_at = s.ended_at || nowSql();
+      s.ended_at = s.ended_at || s.expires_at || nowSql();
       await col('call_sessions').updateOne(
         { id: s.id },
         { $set: { status: 'ended', ended_at: s.ended_at } }
       );
       await credits.settleSession(s);
-    } else if (!expired && s.status === 'ended') {
-      // Still within the 5-minute window! Keep session active so it can be resumed
-      s.status = 'active';
-      s.ended_at = null;
-      s.settled_at = null;
-      await col('call_sessions').updateOne(
-        { id: s.id },
-        { $set: { status: 'active', ended_at: null, settled_at: null } }
-      );
     }
   }
   const [tokens_used, answer_count, line_count] = await Promise.all([
@@ -187,6 +179,14 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
 
+    // Once expired after 15 minutes, a session cannot be restarted — create a new session
+    if (owned.expires_at && isExpired(owned.expires_at)) {
+      return res.status(410).json({
+        error: 'session_expired',
+        message: 'This session has expired after 15 minutes. Please create a new session.',
+      });
+    }
+
     const requested = String((req.body && req.body.billing) || '')
       || (owned.billing_kind || (String(req.body && req.body.plan) === 'full' ? 'paid' : 'trial'));
 
@@ -196,17 +196,18 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     } catch (err) {
       return res.status(err.status || 409).json({
         error: err.code || 'no_trials_left',
-        message: err.message || 'All 5 free trial sessions have been used. Payment is required to continue.',
+        message: err.message || 'All 5 free credits have been used. Payment is required to continue.',
       });
     }
 
     const forceKind = opened.kind === 'unlimited';
-    const isRestarting = !owned.expires_at || isExpired(owned.expires_at) || owned.status === 'ended' || owned.status === 'ready';
+    const isFirstStart = !owned.started_at;
+    const sessionMinutes = opened.minutes || credits.TRIAL_MINUTES || 15;
     const $set = {
       status: 'active',
       plan: owned.plan || (opened.kind === 'trial' ? 'free' : 'full'),
-      started_at: isRestarting ? nowSql() : (owned.started_at || nowSql()),
-      expires_at: isRestarting ? addMinutesFromNow(opened.minutes || 5) : owned.expires_at,
+      started_at: isFirstStart ? nowSql() : owned.started_at,
+      expires_at: isFirstStart ? addMinutesFromNow(sessionMinutes) : (owned.expires_at || addMinutesFromNow(sessionMinutes)),
       ended_at: null,
       settled_at: null,
     };
@@ -214,6 +215,24 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
 
     await col('call_sessions').updateOne({ id: owned.id }, { $set });
     res.json({ session: await enrichSession(await ownedSession(req.user.id, owned.id)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/resume', requireAuth, async (req, res, next) => {
+  try {
+    const owned = await ownedSession(req.user.id, req.params.id);
+    if (!owned) return res.status(404).json({ error: 'not_found' });
+
+    const newExpiresAt = addMinutesFromNow(15);
+    await col('call_sessions').updateOne(
+      { id: owned.id },
+      { $set: { status: 'active', expires_at: newExpiresAt, ended_at: null } }
+    );
+
+    const updated = await ownedSession(req.user.id, owned.id);
+    res.json({ session: await enrichSession(updated) });
   } catch (err) {
     next(err);
   }
@@ -274,7 +293,7 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/audio', requireAuth, upload.single('audio'), async (req, res, next) => {
+router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio'), async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
@@ -372,13 +391,13 @@ router.post('/:id/audio', requireAuth, upload.single('audio'), async (req, res, 
       const promptEstimate = Math.ceil(messages.map(m => m.content).join('\n').length / 4);
       const usedNow = await tokensUsedThisMonth(req.user.id);
       const answerGate = quota.check(req.user, usedNow, promptEstimate + 64);
-      
+
       if (!answerGate.blocked) {
         const chosenModel = modelFor(owned);
         const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 900);
         const budget = quota.outputBudget(MAX_OUTPUT_TOKENS, answerGate.remaining, promptEstimate);
         const answerUsageId = await reserveUsage(req.user.id, chosenModel, promptEstimate, budget, owned.id);
-        
+
         let answerText = '';
         let reported = null;
         try {
@@ -427,7 +446,7 @@ router.post('/:id/audio', requireAuth, upload.single('audio'), async (req, res, 
   }
 });
 
-router.post('/:id/questions', requireAuth, async (req, res, next) => {
+router.post('/:id/questions', requireAuth, answerLimiter, async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
