@@ -20,6 +20,6 @@
     "nodemailer": "^9.1.1",
     "openai": "^7.4.0",
     "pdf-parse": "^2.4.5",
-    "stripe": "^22.6.1"
+    "razorpay": "^2.9.8"
   }
 }

@@ -16,6 +16,7 @@ const { requireAuth } = require('./auth');
 const { openai } = require('./openai-client');
 const quota = require('./quota');
 const { technicalTerms } = require('./modes');
+const { rateLimit } = require('./rateLimit');
 
 const MODEL = process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const MAX_CHUNK_BYTES = 10 * 1024 * 1024;
@@ -150,21 +151,44 @@ const HALLUCINATIONS = [
   'like and subscribe', 'subscribe to my channel', 'thanks for listening',
   'thank you', 'you', 'bye', 'okay', 'ok', 'mm-hmm', 'uh', 'um',
   'silence', '[silence]', '[music]', '[applause]', 'music playing',
-  'transcription by', 'amara.org',
+  'transcription by', 'amara.org', 'cuáles son', 'cuales son',
+  'muchas gracias por ver', 'hangi zarzı', 'hangi zarzi',
 ];
 
-function isHallucination(sentence) {
-  const n = sentence.trim().toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
-  // Same non-Latin-script gap as isPromptEcho above: stripping to [a-z0-9]
-  // empties out any Telugu/Korean/Arabic/etc. sentence regardless of what it
-  // actually says. HALLUCINATIONS is an English-only list, so a sentence
-  // that has real (non-Latin) content left after only whitespace/punctuation
-  // is trimmed cannot be one of these phrases — only true silence should be.
-  if (!n) return !sentence.trim();
+const CJK_REGEX = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\uac00-\ud7af]/;
+const CYRILLIC_REGEX = /[\u0400-\u04ff]/;
+const ARABIC_REGEX = /[\u0600-\u06ff]/;
+
+const MULTILINGUAL_HALLUCINATIONS = [
+  '他に何かご質問はありますか', 'ご視聴ありがとうございました', 'チャンネル登録',
+  '哇真是加速', '请不吝点赞', '谢谢大家', '谢谢观看',
+];
+
+function isHallucination(sentence, sessionLang = 'en') {
+  const trimmed = String(sentence || '').trim();
+  if (!trimmed) return true;
+
+  const lang = String(sessionLang || 'en').toLowerCase();
+
+  // If the user's session is in English (or Latin-based languages):
+  // Any sentence with CJK (Japanese, Chinese, Korean), Cyrillic, or Arabic script is an obvious silence hallucination.
+  if (lang === 'en' || lang === 'english') {
+    if (CJK_REGEX.test(trimmed)) return true;
+    if (CYRILLIC_REGEX.test(trimmed) || ARABIC_REGEX.test(trimmed)) return true;
+    if (trimmed.startsWith('¿') || trimmed.startsWith('¡')) return true;
+  }
+
+  // Known multilingual silence phrases that should always be dropped
+  if (MULTILINGUAL_HALLUCINATIONS.some((h) => trimmed.includes(h))) {
+    return true;
+  }
+
+  const n = trimmed.toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim();
+  if (!n) return true;
   return HALLUCINATIONS.some((h) => n === h.replace(/[^a-z0-9 ]+/g, '').trim());
 }
 
-function stripPromptEcho(text, prompt) {
+function stripPromptEcho(text, prompt, sessionLang = 'en') {
   // Falls back to the base prompt so any caller that does not pass one keeps
   // the original protection rather than losing it.
   const wordsets = promptWordsets(prompt || TRANSCRIBE_PROMPT);
@@ -173,7 +197,7 @@ function stripPromptEcho(text, prompt) {
     .filter((sentence) => {
       const norm = sentence.trim().toLowerCase().replace(/\s+/g, ' ');
       if (!norm) return false;
-      if (isHallucination(sentence)) return false;
+      if (isHallucination(sentence, sessionLang)) return false;
       return !isPromptEcho(sentence, wordsets);
     });
 
@@ -185,16 +209,16 @@ function stripPromptEcho(text, prompt) {
 async function transcribeAudio(buffer, filename, contentType, session) {
   const file = await toFile(buffer, filename, { type: contentType || 'audio/webm' });
   const promptUsed = promptFor(session);
+  const sessionLang = String((session && session.language) || '').toLowerCase();
+  const langCode = LANGUAGE_CODES[sessionLang] || 'en';
   const result = await openai().audio.transcriptions.create({
     model: MODEL,
     file,
     prompt: promptUsed,
-    ...(LANGUAGE_CODES[String((session && session.language) || '').toLowerCase()]
-      ? { language: LANGUAGE_CODES[String(session.language).toLowerCase()] }
-      : {}),
+    language: langCode,
   });
 
-  const cleaned = stripPromptEcho(result.text, promptUsed);
+  const cleaned = stripPromptEcho(result.text, promptUsed, sessionLang || 'en');
   return {
     text: cleaned,
     rawText: result.text,
@@ -204,9 +228,19 @@ async function transcribeAudio(buffer, filename, contentType, session) {
 
 const router = express.Router();
 
+// Generous headroom above the real ~24/min a continuous 2.5s-chunk recording
+// produces (see speechService.js) — this is a backstop against a runaway or
+// malicious client, not a throttle on normal use.
+const transcribeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 90,
+  keyFn: (req) => `transcribe:${req.user.id}`,
+});
+
 router.post(
   '/',
   requireAuth,
+  transcribeLimiter,
   express.raw({ type: () => true, limit: MAX_CHUNK_BYTES }),
   async (req, res, next) => {
     if (!Buffer.isBuffer(req.body) || req.body.length < 3000) {
@@ -277,6 +311,7 @@ router.post(
 module.exports = {
   router,
   transcribeAudio,
+  transcribeLimiter,
   MODEL,
   RESERVE_TOKENS,
   ALLOWED_EXTENSIONS

@@ -18,6 +18,16 @@ const { openai } = require('./openai-client');
 const quota = require('./quota');
 const { getSession } = require('./sessions');
 const credits = require('./credits');
+const { rateLimit } = require('./rateLimit');
+
+// Screenshots are a manual, one-at-a-time action — nothing like this many is
+// ever needed for real use. A backstop against a runaway client, not a
+// throttle on someone actually taking screenshots by hand.
+const visionLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  keyFn: (req) => `vision:${req.user.id}`,
+});
 
 const MAX_DOC_CHARS = 12000;
 function loadDoc(userId, kind) {
@@ -95,6 +105,7 @@ const SYSTEM_PROMPT = [
 router.post(
   '/',
   requireAuth,
+  visionLimiter,
   express.raw({ type: () => true, limit: MAX_IMAGE_BYTES }),
   async (req, res, next) => {
     const contentType = req.get('Content-Type') || 'image/jpeg';

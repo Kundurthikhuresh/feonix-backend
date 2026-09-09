@@ -21,7 +21,7 @@ const { router: handoffRouter } = require('./handoff');
 
 // Career Platform Routes
 const profileRouter = require('./profile');
-const stripeRouter = require('./stripe');
+const razorpayRouter = require('./razorpay');
 const resumeAiRouter = require('./resume-ai');
 const jobAnalyzerRouter = require('./job-analyzer');
 const coverLetterRouter = require('./cover-letter');
@@ -58,8 +58,8 @@ app.use(cors({
   credentials: true,
 }));
 
-// Stripe webhook MUST receive raw body — register BEFORE express.json()
-app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
+// Razorpay webhook MUST receive raw body — register BEFORE express.json()
+app.use('/api/razorpay/webhook', express.raw({ type: 'application/json' }));
 
 app.use('/api/vision', express.json({ limit: '32mb' }));
 app.use(express.json({ limit: '4mb' }));
@@ -104,7 +104,7 @@ app.use('/api/sessions', sessionsRouter);
 
 // Career Platform Routes
 app.use('/api/profile', profileRouter);
-app.use('/api/stripe', stripeRouter);
+app.use('/api/razorpay', razorpayRouter);
 app.use('/api/resume', resumeAiRouter);
 app.use('/api/job', jobAnalyzerRouter);
 app.use('/api/cover-letter', coverLetterRouter);

@@ -16,6 +16,7 @@ const express = require('express');
 const { col, nowSql, isExpired, addMinutesFromNow, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
 const { requireAuth } = require('./auth');
 const { openai } = require('./openai-client');
+const { rateLimit } = require('./rateLimit');
 const {
   SESSION_TYPES, ACTIONS, DEFAULT_TYPE, DEFAULT_ACTION, systemPromptFor, catalogue,
   groundingBlock, classifyQuestion,
@@ -61,6 +62,17 @@ const MAX_IMAGES = 8;
 const MAX_DOC_CHARS = 8000;
 
 const router = express.Router();
+
+// A live interview asks questions minutes apart, not several per second —
+// this is a backstop against a runaway client or a compromised renderer
+// hammering the paid endpoint, not a throttle on real use. Regenerate/
+// Shorten/Expand share the same bucket, so someone clicking through all
+// three on one answer still comfortably fits inside a minute.
+const answerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  keyFn: (req) => `answer:${req.user.id}`,
+});
 
 // ~4 characters per token. Only used for the pre-flight estimate and as a
 // fallback if a stream dies before reporting usage — the reservation covers
@@ -216,17 +228,12 @@ function buildMessages({
       'a vendor was called, or that anything was restored in any timeframe. If\n' +
       'the only thing you can find is a responsibility, then you do not have a\n' +
       'story and you must not build one.\n\n' +
-      'Only if there is genuinely no matching episode anywhere above: say briefly,\n' +
-      'in your own words, that you\n' +
-      'do not want to overstate a specific case, then talk about the work you\n' +
-      'genuinely do here — the systems, what typically goes wrong with them, how\n' +
-      'you approach it, who you escalate to. Concrete about the work, silent\n' +
-      'about events that did not happen.\n' +
-      'Phrase that opening yourself and differently each time. Do not reuse a\n' +
-      'set formula — a candidate who opens every answer with the same sentence\n' +
-      'sounds like they are reading, which is worse than the invented story.\n' +
-      'If a previous turn already said this, do not say it again: just carry on\n' +
-      'answering truthfully about the work.'
+      'Only if there is genuinely no matching episode anywhere above: talk affirmatively\n' +
+      'and concretely about how you approach this work — the systems, best practices,\n' +
+      'troubleshooting methodology, and execution steps. Concrete about the work and\n' +
+      'principles, without inventing fictional company names or dates.\n' +
+      'Phrase that opening naturally yourself. Do not reuse a set formula.\n' +
+      'Focus on delivering high-value, competent answers that showcase your expertise.'
     );
   }
 
@@ -280,7 +287,7 @@ function sse(res, event, payload) {
 // Lets the client render the persona and action lists without hardcoding them.
 router.get('/catalogue', requireAuth, (req, res) => res.json({ ...catalogue(), agents: AGENTS }));
 
-router.post('/', requireAuth, async (req, res, next) => {
+router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
   const question = String((req.body && req.body.question) || '').trim();
   const rawImages = (req.body && req.body.images) || (req.body && req.body.image ? [req.body.image] : []);
   const images = Array.isArray(rawImages) ? rawImages.filter(Boolean).slice(0, MAX_IMAGES) : [];
@@ -516,4 +523,5 @@ module.exports = {
   classifyQuestion,
   modelFor,
   estimateTokens,
+  answerLimiter,
 };

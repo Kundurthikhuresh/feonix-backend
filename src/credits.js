@@ -1,9 +1,10 @@
 const { col, nextId, nowSql, isExpired, minutesBetween, publicDoc } = require('./db');
 
-const DEFAULT_FREE_TRIALS = Number(process.env.DEFAULT_FREE_TRIALS || 5);
-const TRIAL_MINUTES = 5;
-const BILLING_BLOCK_MINUTES = 30;
-const CREDIT_PER_BLOCK = 0.5;
+const DEFAULT_FREE_CREDITS = Number(process.env.DEFAULT_FREE_CREDITS || process.env.DEFAULT_FREE_TRIALS || 5);
+const DEFAULT_FREE_TRIALS = DEFAULT_FREE_CREDITS;
+const TRIAL_MINUTES = 15;
+const BILLING_BLOCK_MINUTES = 15;
+const CREDIT_PER_BLOCK = 1;
 const UNLIMITED_MINUTES = 24 * 60;
 
 function round2(n) {
@@ -24,39 +25,51 @@ async function isUnlimited(userId) {
 }
 
 async function creditBalance(userId) {
-  const rows = await col('credit_transactions').aggregate([
-    { $match: { user_id: userId } },
-    { $group: { _id: null, bal: { $sum: '$amount' } } },
-  ]).toArray();
-  return round2(rows[0] ? rows[0].bal : 0);
+  const [creditRows, trialRows] = await Promise.all([
+    col('credit_transactions').aggregate([
+      { $match: { user_id: userId } },
+      { $group: { _id: null, bal: { $sum: '$amount' } } },
+    ]).toArray(),
+    col('trial_transactions').aggregate([
+      { $match: { user_id: userId, type: 'TRIAL_CONSUMED' } },
+      { $group: { _id: null, used: { $sum: '$amount' } } },
+    ]).toArray(),
+  ]);
+  const netCredits = creditRows[0] ? creditRows[0].bal : 0;
+  const usedTrials = trialRows[0] ? -trialRows[0].used : 0;
+  // Every user starts with 5 free credits, minus any consumed sessions + any granted credits
+  return round2(Math.max(0, DEFAULT_FREE_CREDITS - usedTrials + netCredits));
 }
 
 async function trialsRemaining(userId) {
-  const rows = await col('trial_transactions').aggregate([
-    { $match: { user_id: userId } },
-    { $group: { _id: null, net: { $sum: '$amount' } } },
-  ]).toArray();
-  const net = rows[0] ? rows[0].net : 0;
-  return Math.max(0, DEFAULT_FREE_TRIALS + net);
+  return await creditBalance(userId);
 }
 
 async function trialsUsed(userId) {
-  const rows = await col('trial_transactions').aggregate([
-    { $match: { user_id: userId, type: 'TRIAL_CONSUMED' } },
-    { $group: { _id: null, used: { $sum: '$amount' } } },
-  ]).toArray();
-  return Math.max(0, -(rows[0] ? rows[0].used : 0));
+  const [trialRows, creditRows] = await Promise.all([
+    col('trial_transactions').aggregate([
+      { $match: { user_id: userId, type: 'TRIAL_CONSUMED' } },
+      { $group: { _id: null, used: { $sum: '$amount' } } },
+    ]).toArray(),
+    col('credit_transactions').aggregate([
+      { $match: { user_id: userId, type: 'CONSUME' } },
+      { $group: { _id: null, used: { $sum: '$amount' } } },
+    ]).toArray(),
+  ]);
+  const trialUsed = trialRows[0] ? -trialRows[0].used : 0;
+  const creditUsed = creditRows[0] ? -creditRows[0].used : 0;
+  return Math.max(0, trialUsed + creditUsed);
 }
 
 function creditsForMinutes(minutes) {
   const m = Math.max(0, Number(minutes) || 0);
-  const blocks = Math.max(1, Math.ceil(m / BILLING_BLOCK_MINUTES));
+  const blocks = Math.max(1, Math.ceil(m / TRIAL_MINUTES));
   return round2(blocks * CREDIT_PER_BLOCK);
 }
 
 async function entitlementMinutes(userId) {
-  const blocks = Math.floor((await creditBalance(userId)) / CREDIT_PER_BLOCK);
-  return blocks * BILLING_BLOCK_MINUTES;
+  const balance = await creditBalance(userId);
+  return balance * TRIAL_MINUTES;
 }
 
 async function grantCredits(userId, amount, { adminId = null, reason = null } = {}) {
@@ -108,48 +121,29 @@ async function openSession(userId, sessionId, requestedKind) {
     return { kind: 'unlimited', minutes: UNLIMITED_MINUTES };
   }
 
-  // If a trial or credit transaction was already deducted for this session and it is still valid, return existing allocation
+  // If a trial or credit transaction was already deducted for this session and it is still valid (not expired), return existing allocation
   if (sessionId) {
     const sessionDoc = await col('call_sessions').findOne({ id: Number(sessionId), user_id: userId });
     const isEnded = sessionDoc && (sessionDoc.status === 'ended' || (sessionDoc.expires_at && isExpired(sessionDoc.expires_at)));
     if (sessionDoc && !isEnded) {
-      const existingTrial = await col('trial_transactions').findOne({ user_id: userId, session_id: Number(sessionId) });
-      if (existingTrial) {
-        return { kind: 'trial', minutes: TRIAL_MINUTES };
-      }
-      const existingCredit = await col('credit_transactions').findOne({ user_id: userId, session_id: Number(sessionId), type: 'CONSUME' });
-      if (existingCredit) {
-        return { kind: 'paid', minutes: TRIAL_MINUTES };
-      }
+      return { kind: sessionDoc.billing_kind || 'trial', minutes: TRIAL_MINUTES };
     }
   }
 
-  const kind = requestedKind === 'paid' ? 'paid' : 'trial';
-
-  if (kind === 'trial') {
-    const remaining = await trialsRemaining(userId);
-    if (remaining <= 0) {
-      const err = new Error('All 5 free trial sessions have been used. Payment is required to continue.');
-      err.code = 'no_trials_left';
-      err.status = 409;
-      throw err;
-    }
-    const id = await nextId('trial_transactions');
-    await col('trial_transactions').insertOne({
-      id, user_id: userId, type: 'TRIAL_CONSUMED', amount: -1,
-      session_id: sessionId, admin_id: null, reason: 'Session created', created_at: nowSql(),
-    });
-    return { kind, minutes: TRIAL_MINUTES };
-  }
-
-  const minutes = await entitlementMinutes(userId);
-  if (minutes < 1) {
-    const err = new Error('Not enough credits to start a paid session.');
-    err.code = 'insufficient_credits';
-    err.status = 402;
+  const remaining = await creditBalance(userId);
+  if (remaining <= 0) {
+    const err = new Error('All 5 free credits have been used. Payment is required to continue.');
+    err.code = 'no_trials_left';
+    err.status = 409;
     throw err;
   }
-  return { kind, minutes };
+
+  const id = await nextId('trial_transactions');
+  await col('trial_transactions').insertOne({
+    id, user_id: userId, type: 'TRIAL_CONSUMED', amount: -1,
+    session_id: sessionId ? Number(sessionId) : null, admin_id: null, reason: '15-min session created', created_at: nowSql(),
+  });
+  return { kind: 'trial', minutes: TRIAL_MINUTES };
 }
 
 async function settleSession(session) {
@@ -170,46 +164,26 @@ async function settleSession(session) {
   if (session.billing_kind === 'unlimited') {
     return { kind: 'unlimited', minutes: round2(minutes), credits: 0 };
   }
-  if (session.billing_kind !== 'paid') {
-    return { kind: 'trial', minutes, credits: 0 };
-  }
-
-  const credits = creditsForMinutes(minutes);
-  const id = await nextId('credit_transactions');
-  await col('credit_transactions').insertOne({
-    id,
-    user_id: session.user_id,
-    type: 'CONSUME',
-    amount: -credits,
-    session_id: session.id,
-    usage_minutes: round2(minutes),
-    admin_id: null,
-    reason: 'session usage',
-    created_at: nowSql(),
-  });
-
-  return { kind: 'paid', minutes: round2(minutes), credits };
+  return { kind: session.billing_kind || 'trial', minutes: round2(minutes), credits: 1 };
 }
 
 async function accountSummary(userId) {
+  const balance = await creditBalance(userId);
+  const used = await trialsUsed(userId);
+  const unlimited = await isUnlimited(userId);
   const grantedRows = await col('credit_transactions').aggregate([
     { $match: { user_id: userId, amount: { $gt: 0 } } },
     { $group: { _id: null, v: { $sum: '$amount' } } },
   ]).toArray();
-  const consumedRows = await col('credit_transactions').aggregate([
-    { $match: { user_id: userId, amount: { $lt: 0 } } },
-    { $group: { _id: null, v: { $sum: '$amount' } } },
-  ]).toArray();
-  const unlimited = await isUnlimited(userId);
   return {
     unlimited,
-    credits: await creditBalance(userId),
-    credits_granted: round2(grantedRows[0] ? grantedRows[0].v : 0),
-    credits_used: round2(-(consumedRows[0] ? consumedRows[0].v : 0)),
-    entitlement_minutes: unlimited ? UNLIMITED_MINUTES : await entitlementMinutes(userId),
+    credits: balance,
+    credits_granted: round2(DEFAULT_FREE_CREDITS + (grantedRows[0] ? grantedRows[0].v : 0)),
+    credits_used: round2(used),
+    entitlement_minutes: unlimited ? UNLIMITED_MINUTES : balance * TRIAL_MINUTES,
     trials_total: DEFAULT_FREE_TRIALS,
-    trials_used: await trialsUsed(userId),
-    trials_remaining: await trialsRemaining(userId),
+    trials_used: used,
+    trials_remaining: balance,
     trial_minutes: TRIAL_MINUTES,
   };
 }
