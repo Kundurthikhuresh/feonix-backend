@@ -186,8 +186,12 @@ router.post('/register', registerLimiter, async (req, res, next) => {
 
     await startSession(req, id);
 
-    // Send welcome email (fire-and-forget)
-    sendWelcomeEmail(email).catch(console.error);
+    // Send welcome email (fire-and-forget, deferred to next tick)
+    setImmediate(() => {
+      sendWelcomeEmail(email).catch((mailErr) => {
+        console.error('Non-blocking welcome email error:', mailErr);
+      });
+    });
 
     // Skips both findUserById() and tokensUsedThisMonth(): we already have
     // every field of the row we just inserted, and a brand-new account

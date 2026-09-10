@@ -220,48 +220,54 @@ class MemoryCollection {
   }
 }
 
+let connectPromise = null;
+
 async function connect() {
   if (db) return db;
-  const uri = process.env.MONGODB_URI;
-  if (!uri) {
-    console.warn('MONGODB_URI not provided. Running in memory fallback mode.');
+  if (connectPromise) return connectPromise;
+
+  connectPromise = (async () => {
+    const uri = process.env.MONGODB_URI;
+    if (!uri) {
+      console.warn('MONGODB_URI not provided. Running in memory fallback mode.');
+      isFallback = true;
+      db = { collection: (name) => new MemoryCollection(name) };
+      return db;
+    }
+
+    const CONNECT_TIMEOUT_MS = 15000;
+    const CONNECT_ATTEMPTS = 2;
+
+    for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+      try {
+        client = new MongoClient(uri, {
+          secureContext: MONGO_SECURE_CONTEXT,
+          serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
+          connectTimeoutMS: CONNECT_TIMEOUT_MS,
+          maxPoolSize: 20,
+          minPoolSize: 2,
+          maxIdleTimeMS: 60000,
+          socketTimeoutMS: 45000,
+        });
+        await client.connect();
+        db = client.db(process.env.MONGODB_DB || 'feonixai');
+        await ensureIndexes();
+        console.log('Successfully connected to MongoDB Atlas.');
+        return db;
+      } catch (err) {
+        console.warn(`⚠️ [DB Warning] MongoDB Atlas connection attempt ${attempt}/${CONNECT_ATTEMPTS} failed (${err.message}).`);
+        try { await client?.close(); } catch { /* nothing to close */ }
+      }
+    }
+
+    console.warn('⚠️ Switching to in-memory store so Feonix AI API & Assistant run smoothly.');
+    console.warn('⚠️ This process will NOT see real user data until it is restarted with a working connection.');
     isFallback = true;
     db = { collection: (name) => new MemoryCollection(name) };
     return db;
-  }
-  // 5s was tripping on ordinary network latency to Atlas on this box, not
-  // just real outages — every trip into the fallback silently swaps real
-  // user data for a volatile in-memory store for the rest of the process's
-  // life, which is a much worse failure mode than waiting a few seconds
-  // longer to connect. 15s is what direct connection attempts from this
-  // machine reliably succeed within; one retry absorbs a single dropped
-  // handshake before accepting the connection has actually failed.
-  const CONNECT_TIMEOUT_MS = 15000;
-  const CONNECT_ATTEMPTS = 2;
+  })();
 
-  for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
-    try {
-      client = new MongoClient(uri, {
-        secureContext: MONGO_SECURE_CONTEXT,
-        serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
-        connectTimeoutMS: CONNECT_TIMEOUT_MS,
-      });
-      await client.connect();
-      db = client.db(process.env.MONGODB_DB || 'feonixai');
-      await ensureIndexes();
-      console.log('Successfully connected to MongoDB Atlas.');
-      return db;
-    } catch (err) {
-      console.warn(`⚠️ [DB Warning] MongoDB Atlas connection attempt ${attempt}/${CONNECT_ATTEMPTS} failed (${err.message}).`);
-      try { await client?.close(); } catch { /* nothing to close */ }
-    }
-  }
-
-  console.warn('⚠️ Switching to in-memory store so Feonix AI API & Assistant run smoothly.');
-  console.warn('⚠️ This process will NOT see real user data until it is restarted with a working connection.');
-  isFallback = true;
-  db = { collection: (name) => new MemoryCollection(name) };
-  return db;
+  return connectPromise;
 }
 
 function col(name) {
