@@ -74,6 +74,24 @@ if (!sessionSecret) {
   console.warn('SESSION_SECRET not set — using a random one. Sessions reset on restart.');
 }
 
+// Database readiness guard: ensures MongoDB is connected before
+// handling any session or API requests. Requests arriving during
+// startup or reconnect will cleanly wait for connect() rather than
+// failing with ECONNREFUSED or unhandled 'Database not connected' errors.
+app.use(async (req, res, next) => {
+  if (req.path === '/api/health') return next();
+  try {
+    await connect();
+    next();
+  } catch (err) {
+    console.error('Database connection guard error:', err);
+    res.status(503).json({
+      error: 'server_unavailable',
+      message: 'Authentication service is initializing. Please try again in a moment.',
+    });
+  }
+});
+
 app.use(
   session({
     name: 'sid',
@@ -128,7 +146,7 @@ app.get('/api/health', (req, res) => {
 
 app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
   const platform = req.params.platform.toLowerCase();
-  const distDir = path.join(__dirname, '..', '..', 'desktop-electron', 'dist');
+  const distDir = path.join(__dirname, '..', '..', 'frontend', 'desktop-electron', 'dist');
   const fs = require('fs');
 
   if (!fs.existsSync(distDir)) {
@@ -169,9 +187,11 @@ app.use((err, req, res, next) => {
 });
 
 async function start() {
-  await connect();
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`feonixai api listening on http://localhost:${PORT}`);
+  });
+  connect().catch((err) => {
+    console.error('Initial MongoDB connection error:', err);
   });
 }
 
