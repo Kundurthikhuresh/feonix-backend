@@ -2,7 +2,7 @@ const { col, nextId, nowSql, isExpired, minutesBetween, publicDoc } = require('.
 
 const DEFAULT_FREE_CREDITS = Number(process.env.DEFAULT_FREE_CREDITS || process.env.DEFAULT_FREE_TRIALS || 5);
 const DEFAULT_FREE_TRIALS = DEFAULT_FREE_CREDITS;
-const TRIAL_MINUTES = 15;
+const TRIAL_MINUTES = 10;
 const BILLING_BLOCK_MINUTES = 15;
 const CREDIT_PER_BLOCK = 1;
 const UNLIMITED_MINUTES = 24 * 60;
@@ -126,7 +126,8 @@ async function openSession(userId, sessionId, requestedKind) {
     const sessionDoc = await col('call_sessions').findOne({ id: Number(sessionId), user_id: userId });
     const isEnded = sessionDoc && (sessionDoc.status === 'ended' || (sessionDoc.expires_at && isExpired(sessionDoc.expires_at)));
     if (sessionDoc && !isEnded) {
-      return { kind: sessionDoc.billing_kind || 'trial', minutes: TRIAL_MINUTES };
+      const isTrial = sessionDoc.billing_kind === 'trial' || sessionDoc.plan === 'free';
+      return { kind: sessionDoc.billing_kind || 'trial', minutes: isTrial ? TRIAL_MINUTES : BILLING_BLOCK_MINUTES };
     }
   }
 
@@ -141,7 +142,7 @@ async function openSession(userId, sessionId, requestedKind) {
   const id = await nextId('trial_transactions');
   await col('trial_transactions').insertOne({
     id, user_id: userId, type: 'TRIAL_CONSUMED', amount: -1,
-    session_id: sessionId ? Number(sessionId) : null, admin_id: null, reason: '15-min session created', created_at: nowSql(),
+    session_id: sessionId ? Number(sessionId) : null, admin_id: null, reason: '10-min session created', created_at: nowSql(),
   });
   return { kind: 'trial', minutes: TRIAL_MINUTES };
 }
