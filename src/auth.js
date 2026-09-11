@@ -102,16 +102,6 @@ async function requireAuth(req, res, next) {
   try {
     let userId = req.session && req.session.userId;
 
-    if (!userId && process.env.NODE_ENV === 'development') {
-      const firstUser = await col('users').findOne({});
-      if (firstUser) {
-        userId = firstUser.id;
-        if (req.session) {
-          req.session.userId = userId;
-        }
-      }
-    }
-
     if (!userId) {
       return res.status(401).json({ error: 'unauthenticated', message: 'Sign in first.' });
     }
