@@ -150,8 +150,11 @@ app.get('/api/health', (req, res) => {
 app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
   const platform = req.params.platform.toLowerCase();
 
-  // In production deployments (e.g., Vercel / Render / AWS), binaries are typically hosted
-  // on GitHub Releases, AWS S3, or Cloudflare R2 rather than the container filesystem.
+  const DEFAULT_WINDOWS_URL = 'https://github.com/Kundurthikhuresh/feonix-frontend/releases/download/v0.2.0/FeonixAI.Setup.0.2.0.exe';
+  const winDownloadUrl = process.env.WINDOWS_DOWNLOAD_URL || DEFAULT_WINDOWS_URL;
+
+  // In production deployments or fresh clones where local dist/ hasn't been built,
+  // download directly from the official release URL.
   if ((platform === 'win' || platform === 'exe') && process.env.WINDOWS_DOWNLOAD_URL) {
     return res.redirect(302, process.env.WINDOWS_DOWNLOAD_URL);
   }
@@ -173,7 +176,10 @@ app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
   const distDir = candidateDirs.find((dir) => fs.existsSync(dir));
 
   if (!distDir) {
-    return res.status(404).send('No built installers found. In local dev, run "npm run desktop:dist:win" in the frontend. In production, configure WINDOWS_DOWNLOAD_URL in your backend environment variables.');
+    if (platform === 'win' || platform === 'exe') {
+      return res.redirect(302, winDownloadUrl);
+    }
+    return res.status(404).send('No built installers found for ' + platform);
   }
 
   const files = fs.readdirSync(distDir);
@@ -184,6 +190,9 @@ app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
     candidates = files.filter((f) => f.endsWith('.exe') && !f.startsWith('__uninstaller'));
   }
   if (!candidates.length) {
+    if (platform === 'win' || platform === 'exe') {
+      return res.redirect(302, winDownloadUrl);
+    }
     return res.status(404).send(`No installer binary found for ${platform}.`);
   }
   // electron-builder never cleans up a previous version's output in dist/,
