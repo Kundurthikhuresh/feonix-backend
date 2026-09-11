@@ -149,11 +149,31 @@ app.get('/api/health', (req, res) => {
 
 app.get(['/download/:platform', '/api/download/:platform'], (req, res) => {
   const platform = req.params.platform.toLowerCase();
-  const distDir = path.join(__dirname, '..', '..', 'frontend', 'desktop-electron', 'dist');
+
+  // In production deployments (e.g., Vercel / Render / AWS), binaries are typically hosted
+  // on GitHub Releases, AWS S3, or Cloudflare R2 rather than the container filesystem.
+  if ((platform === 'win' || platform === 'exe') && process.env.WINDOWS_DOWNLOAD_URL) {
+    return res.redirect(302, process.env.WINDOWS_DOWNLOAD_URL);
+  }
+  if ((platform === 'mac' || platform === 'dmg') && process.env.MAC_DOWNLOAD_URL) {
+    return res.redirect(302, process.env.MAC_DOWNLOAD_URL);
+  }
+
   const fs = require('fs');
 
-  if (!fs.existsSync(distDir)) {
-    return res.status(404).send('No built installers found.');
+  const candidateDirs = [
+    process.env.ELECTRON_DIST_DIR,
+    path.join(__dirname, '..', '..', 'feonix-frontend', 'desktop-electron', 'dist'),
+    path.join(__dirname, '..', '..', 'frontend', 'desktop-electron', 'dist'),
+    path.join(__dirname, '..', 'desktop-electron', 'dist'),
+    path.join(process.cwd(), '..', 'feonix-frontend', 'desktop-electron', 'dist'),
+    path.join(process.cwd(), '..', 'frontend', 'desktop-electron', 'dist'),
+  ].filter(Boolean);
+
+  const distDir = candidateDirs.find((dir) => fs.existsSync(dir));
+
+  if (!distDir) {
+    return res.status(404).send('No built installers found. In local dev, run "npm run desktop:dist:win" in the frontend. In production, configure WINDOWS_DOWNLOAD_URL in your backend environment variables.');
   }
 
   const files = fs.readdirSync(distDir);
