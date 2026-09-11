@@ -12,25 +12,39 @@
  * competing "5-6 lines" here makes the model pick one, and it picks this one.
  * So the conflict is removed at the source instead of being arbitrated.
  */
-function formatBlock(lengthRule, pointsRule) {
+function formatBlock(lengthRule, pointsRule, isCoding = false) {
+  if (isCoding) {
+    return [
+      'Reply in exactly this format, tags on their own lines:',
+      '',
+      '[TYPE] coding',
+      '[POINTS]',
+      pointsRule || '- 3 punchy fragments: approach, syntax/structures, time/space complexity',
+      '[ANSWER]',
+      lengthRule,
+      '',
+      'CRITICAL SPEED & CONCISENESS REQUIREMENT (< 5 SECONDS):',
+      'The entire answer MUST stream and complete in under 5 seconds. Be direct, clear, and high-impact.',
+      '1. COMPLETE WORKING CODE: Provide clean, production-ready runnable code in a standard markdown code block (```<language> ... ```) with clear, helpful comments.',
+      '2. CODE EXPLANATION: Provide a direct, highly relevant explanation of that specific code — explain step-by-step how each condition, line, or block executes.',
+      '3. KEY NUANCES: Highlight essential edge cases, syntax nuances, or safety considerations for that specific code.',
+      '4. TIME & SPACE COMPLEXITY: Explicitly state Time Complexity and Space Complexity with Big-O notation and clear rationale.',
+      '5. FAST & FOCUSED: Deliver the primary optimal solution directly without multiple redundant variations so it completes within 5 seconds.',
+    ].join('\n');
+  }
+
   return [
     'Reply in exactly this format, tags on their own lines:',
     '',
     '[TYPE] behavioral | technical | other',
     '[POINTS]',
-    pointsRule || '- three to five fragments, six words or fewer each, the beats to hit',
+    pointsRule || '- three to four fragments, six words or fewer each, the key speaking beats',
     '[ANSWER]',
     lengthRule,
-    'That sentence count is a requirement, not a ceiling to undercut — a',
-    'shorter answer is an incomplete answer even if the question sounded',
-    'simple. Natural and conversational — this is read aloud in a live',
-    'interview, not written down. Answer the question that was actually asked,',
-    'lead with the most relevant real experience, and use every sentence you',
-    'were given. No headings, no bullet lists, no sections, no alternative',
-    'versions.',
-    'Say it the way a person speaks: no "here are three points", no numbered',
-    'run-throughs, no summing up at the end, no corporate polish, no repeating',
-    'the question back, and nothing the interviewer did not ask for.',
+    '',
+    'CRITICAL SPEED & CONCISENESS REQUIREMENT (< 5 SECONDS):',
+    'The answer MUST complete within 5 seconds. Speak with authoritative brevity: 3 to 4 punchy, concrete sentences that answer the question directly with technical substance and zero filler.',
+    'No headings, no bullet lists, no corporate polish, no repeating the question back.',
     '',
     'For [TYPE] behavioral, the points must be STAR and prefixed exactly:',
     '  - S: the situation, - T: the task, - A: what you did, - R: the outcome.',
@@ -38,6 +52,30 @@ function formatBlock(lengthRule, pointsRule) {
     'the order you would say them.',
     'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points like "No specific experience".',
   ].join('\n');
+}
+
+/**
+ * Detects if the prompt is asking for code, programming, algorithms, functions, queries, or implementation.
+ */
+function isCodingQuestion(text) {
+  const q = String(text || '').toLowerCase().trim();
+  if (!q) return false;
+
+  // Direct code / program / syntax / implementation keywords
+  if (/\b(example|sample|demo|snippet|syntax)\s+code\b/i.test(q)) return true;
+  if (/\bcode\s+(example|sample|demo|snippet|template|syntax|solution)\b/i.test(q)) return true;
+  if (/\b(write|create|implement|provide|generate|give|show|build|develop|solve|draft|need|want|share)\b.*?\b(code|program|script|function|class|method|query|algorithm|snippet|solution|component|syntax)\b/i.test(q)) return true;
+  if (/\b(write\s+a?\s*code|write\s+code|code\s+(for|to|of|in|that|addition|subtraction|multiplication|division)|coding\s+question|coding\s+problem)\b/i.test(q)) return true;
+  if (/\b(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|regex)\s+(code|script|program|solution|function|implementation|snippet|syntax)\b/i.test(q)) return true;
+  if (/\b(code|function|program|script|solution|implementation|snippet|syntax)\s+(in|using|with|for)\s+(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell)\b/i.test(q)) return true;
+  if (/\b(with|in)\s+code\b/i.test(q)) return true;
+  if (/\b(write\s+(a\s+)?python|write\s+(a\s+)?javascript|write\s+(a\s+)?typescript|write\s+(a\s+)?java|write\s+(a\s+)?c\+\+|write\s+(a\s+)?cpp|write\s+(a\s+)?sql|write\s+(a\s+)?query)\b/i.test(q)) return true;
+  if (/\b(sql\s+query|select\s+.*\s+from|insert\s+into|update\s+.*\s+set|delete\s+from|create\s+table)\b/i.test(q)) return true;
+  if (/\b(leetcode|hackerrank|codewars)\b/i.test(q)) return true;
+  if (/\b(write\s+a\s+program|write\s+program|program\s+to\s+[a-z]+|function\s+to\s+[a-z]+)\b/i.test(q)) return true;
+  if (/\b(implement|code|program)\s+(a\s+|an\s+|the\s+)?([a-z0-9_-]+\s+)?(binary search|quicksort|mergesort|dfs|bfs|dijkstra|lru cache|linked list|stack|queue|tree|heap|two sum|fibonacci|palindrome|reverse|if condition|while loop|for loop)\b/i.test(q)) return true;
+  if (/\b(if\s+condition|for\s+loop|while\s+loop|switch\s+case)\s+code\b/i.test(q)) return true;
+  return false;
 }
 
 /**
@@ -54,6 +92,11 @@ function formatBlock(lengthRule, pointsRule) {
 function classifyQuestion(question) {
   const q = String(question || '').toLowerCase().trim();
   if (!q) return 'OPEN_ENDED';
+
+  // Coding questions: when the user explicitly asks for code, functions, queries or programs
+  if (isCodingQuestion(q)) {
+    return 'CODING';
+  }
 
   // The interviewer asking the candidate to go over something again. Checked
   // first: several of these open with an auxiliary verb and would otherwise
@@ -103,62 +146,41 @@ function classifyQuestion(question) {
  * count is what actually buys the longer, more detailed answer.
  */
 const TYPE_LENGTH_RULES = {
+  CODING:
+    'Provide the runnable code in a markdown code block (```<language> ... ```), followed by a concise, step-by-step breakdown of that specific code, key edge cases, and Time & Space Complexity analysis. Keep it under 220 words for instant delivery.',
   YES_NO:
-    'What to say out loud: exactly 5 sentences. Answer directly in the first\n' +
-    'one — yes, no, or the honest qualifier — then use the rest for the\n' +
-    'specific evidence behind it: where you have done it, how, and what came\n' +
-    'of it. Not just a one-line confirmation.',
+    'What to say out loud: 3 sentences. Answer directly in the first one — yes, no, or the qualifier — then use the rest for the specific evidence behind it. Punchy, confident, and direct.',
   SHORT_DIRECT:
-    'What to say out loud: exactly 5 sentences. Answer the thing asked in\n' +
-    'full, with the concrete detail behind it, then stop.',
+    'Answer the core question directly and authoritatively in 2 to 3 sentences with concrete technical substance.',
   EXPERIENCE:
-    'What to say out loud: exactly 6 sentences. Say plainly whether you have\n' +
-    'it and at what depth, then the concrete evidence — where, how long, what\n' +
-    'you actually did with it, and a specific example of using it.',
+    'State plainly your depth of experience in 3 to 4 sentences, followed by concrete tools, architecture, and a specific real-world example.',
   BEHAVIORAL:
-    'What to say out loud: if the documents describe an actual incident that\n' +
-    'fits, tell it fully in exactly 9 sentences, the way people tell stories —\n' +
-    'situation, what you had to do, what you did step by step, how it turned\n' +
-    'out, and what it taught you. Structure never announced.\n' +
-    'If they do NOT describe such an incident, answer affirmatively in exactly\n' +
-    '6 sentences by demonstrating your approach, methodology, best practices, and\n' +
-    'problem-solving principles in that domain. Never say "I have no specific\n' +
-    'experience" — articulate how you handle such situations effectively.\n' +
-    'Conversational, authoritative, and direct.',
+    'Deliver a concise 4-sentence STAR answer (Situation, Task, Action, Measurable Result) highlighting your technical methodology and concrete outcome.',
   TECHNICAL:
-    'What to say out loud: exactly 8 sentences. Lead with the answer, then use\n' +
-    'the rest to walk through the full reasoning and any relevant trade-offs in\n' +
-    'the order you would actually say them — thorough enough that nothing\n' +
-    'important is left for a follow-up to drag out of you.',
+    'Deliver a crisp, authoritative technical answer in 3 to 4 sentences: define the core concept/mechanism under the hood, how it executes in production, and the key engineering trade-offs.',
   SCENARIO:
-    'What to say out loud: exactly 7 sentences. What you would do first and\n' +
-    'why, then each next step in order, including how you would check it\n' +
-    'worked.',
+    'Walk through the first action, order of execution, failure mode anticipated, and verification in 3 to 4 direct sentences.',
   MOTIVATION:
-    'What to say out loud: exactly 5 sentences. A specific, honest reason tied\n' +
-    'to this role and this company, with the concrete detail that makes it\n' +
-    'credible — not a general statement about growth.',
+    'Provide a specific, credible reason tied to this role and company in 2 to 3 sentences with concrete detail.',
   CLARIFICATION:
-    'What to say out loud: exactly 4 sentences. The interviewer is asking YOU\n' +
-    'to repeat or clarify what you just said. Never ask them to repeat their\n' +
-    'own question. Open with something like "Sure — what I meant was", then\n' +
-    'say the relevant part of your previous answer again, more plainly and\n' +
-    'with the fuller detail this time. If your previous answer is not in the\n' +
-    'conversation above, ask which part they would like you to go over again.',
+    'Clarify the relevant point directly and precisely in 1 to 2 sentences.',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
 
 /** How many [POINTS] fragments suit this type. */
 function pointsRuleFor(type) {
-  if (['YES_NO', 'SHORT_DIRECT', 'CLARIFICATION'].includes(type)) {
-    return '- two to three fragments, six words or fewer each, the beats to hit';
+  if (type === 'CODING') {
+    return '- three fragments: algorithm approach, data structure/syntax, time and space complexity';
   }
-  return '- four to six fragments, six words or fewer each, the beats to hit';
+  if (['YES_NO', 'SHORT_DIRECT', 'CLARIFICATION'].includes(type)) {
+    return '- two to three fragments, six words or fewer each, the key speaking beats';
+  }
+  return '- three to four fragments, six words or fewer each, the key speaking beats';
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: exactly 8 sentences — enough to fully cover the point' +
-  ' with real detail, not just the headline of it.';
+  'What to say out loud: 3 to 4 sentences — concise, high-impact, directly answering' +
+  ' the question with real substance and no filler.';
 
 /**
  * "Answer in 10 lines" is the phrasing users reach for, and gpt-4o-mini simply
@@ -306,11 +328,10 @@ const SHARED_RULES = [
   '  "additionally", "furthermore", "lastly": those are for writing.',
   '- Do not fake being human. No filler words, no invented hesitation, no',
   '  deliberate mistakes. Natural means accurate and plainly said.',
-  '- No preamble, no "great question", no restating the question.',
-  '- Give a full, detailed answer that uses the entire sentence count required',
-  '  below — do not settle for a shorter answer because the point could',
-  '  technically be made in fewer words. If you cut anything to make room, cut',
-  '  adjectives, hedges and throat-clearing, never the substance or examples.',
+  '- Fast & high-impact: Deliver the core answer directly with real substance and zero filler. Do not generate verbose padding or extra paragraphs.',
+  '- Code Requests vs Conceptual Questions:',
+  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, runnable code in a standard markdown code block (```<language> ... ```) accompanied by a concise description of the approach, how it works, and Big-O complexity. Never give only a verbal description when code is requested.',
+  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide a thorough, clear description and spoken explanation without unnecessary code blocks.',
 ].join('\n');
 
 const SESSION_TYPES = {
@@ -418,11 +439,12 @@ function systemPromptFor(typeKey, actionKey, language, sessionContext, question,
      * The classifier slots in at 3, so it guides the answer without ever
      * overriding something the candidate asked for. */
     const questionType = classifyQuestion(question);
+    const isCoding = questionType === 'CODING';
     const explicit = hasContext ? explicitLengthRule(sessionContext) : null;
     const lengthRule =
       explicit ||
       (hasContext ? CONTEXT_LENGTH_RULE : (TYPE_LENGTH_RULES[questionType] || DEFAULT_LENGTH_RULE));
-    parts.push('', formatBlock(lengthRule, pointsRuleFor(questionType)));
+    parts.push('', formatBlock(lengthRule, pointsRuleFor(questionType), isCoding));
   }
 
   // The user's own session instructions go LAST and in the system prompt, so
@@ -468,6 +490,7 @@ module.exports = {
   DEFAULT_ACTION,
   systemPromptFor,
   classifyQuestion,
+  isCodingQuestion,
   technicalTerms,
   groundingBlock,
   catalogue,

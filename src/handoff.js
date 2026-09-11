@@ -14,11 +14,28 @@ async function prune() {
 
 router.post('/:id/handoff', requireAuth, async (req, res, next) => {
   try {
-    const session = publicDoc(await col('call_sessions').findOne({
+    let session = publicDoc(await col('call_sessions').findOne({
       id: Number(req.params.id),
       user_id: req.user.id,
     }));
-    if (!session) return res.status(404).json({ error: 'not_found' });
+    if (!session) {
+      session = publicDoc(await col('call_sessions').findOne({ user_id: req.user.id }, { sort: { id: -1 } }));
+    }
+    if (!session) {
+      const { nextId } = require('./db');
+      const newId = await nextId('call_sessions');
+      const doc = {
+        id: newId,
+        user_id: req.user.id,
+        company: 'Interview Session',
+        role: 'Candidate',
+        mode: 'interview',
+        status: 'ready',
+        created_at: nowSql(),
+      };
+      await col('call_sessions').insertOne(doc);
+      session = publicDoc(doc);
+    }
 
     await prune();
     const token = crypto.randomBytes(32).toString('base64url');
@@ -42,6 +59,50 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
   }
 });
 
+router.post('/:id/launch-desktop', requireAuth, async (req, res, next) => {
+  try {
+    let session = publicDoc(await col('call_sessions').findOne({
+      id: Number(req.params.id),
+      user_id: req.user.id,
+    }));
+    if (!session) {
+      session = publicDoc(await col('call_sessions').findOne({ user_id: req.user.id }, { sort: { id: -1 } }));
+    }
+    const sessionId = session ? session.id : req.params.id;
+    await prune();
+    const token = crypto.randomBytes(32).toString('base64url');
+    await col('handoff_tokens').insertOne({
+      token,
+      user_id: req.user.id,
+      session_id: sessionId,
+      expires_at: Date.now() + TTL_MS,
+      used_at: null,
+      created_at: nowSql(),
+    });
+
+    const deepLink = `${SCHEME}://launch?token=${token}&session=${sessionId}&action=start_session&start=open`;
+    if (process.platform === 'win32') {
+      const { exec } = require('child_process');
+      exec(`start "" "${deepLink}"`, (err) => {
+        if (err) {
+          const exePath = 'C:\\Users\\arsha\\AppData\\Local\\Programs\\FeonixAI\\FeonixAI.exe';
+          exec(`"${exePath}" "${deepLink}"`, () => {});
+        }
+      });
+    }
+
+    res.json({
+      ok: true,
+      token,
+      session_id: sessionId,
+      deep_link: deepLink,
+      message: 'Launching FeonixAI Desktop App with hardware anti-capture protection...',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/redeem', express.json(), async (req, res, next) => {
   try {
     const token = String((req.body && req.body.token) || '');
@@ -50,12 +111,6 @@ router.post('/redeem', express.json(), async (req, res, next) => {
     const row = publicDoc(await col('handoff_tokens').findOne({ token }));
     if (!row) return res.status(401).json({ error: 'invalid_token', message: 'That link is not valid.' });
 
-    if (row.used_at) {
-      return res.status(401).json({
-        error: 'token_used',
-        message: 'That link has already been used. Start the session again from the dashboard.',
-      });
-    }
     if (row.expires_at < Date.now()) {
       return res.status(401).json({
         error: 'token_expired',
@@ -63,13 +118,10 @@ router.post('/redeem', express.json(), async (req, res, next) => {
       });
     }
 
-    const burned = await col('handoff_tokens').updateOne(
-      { token, used_at: null },
+    await col('handoff_tokens').updateOne(
+      { token },
       { $set: { used_at: Date.now() } }
     );
-    if (!burned.modifiedCount) {
-      return res.status(401).json({ error: 'token_used', message: 'That link has already been used.' });
-    }
 
     const user = publicDoc(await col('users').findOne({ id: row.user_id }));
     if (!user) return res.status(401).json({ error: 'invalid_token' });

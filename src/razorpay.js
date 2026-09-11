@@ -37,13 +37,62 @@ function getRazorpay() {
 // Plan → price, in paise (Razorpay's smallest INR unit) and the credits a
 // successful payment grants. Mirrors the amounts shown on the pricing page.
 const PLAN_CONFIG = {
+  // Legacy plans (kept for backward compatibility)
   pro: {
     amountPaise: Number(process.env.RAZORPAY_PRO_AMOUNT_PAISE || 49900), // ₹499
     credits: 50,
+    name: 'Pro Plan',
   },
   premium: {
     amountPaise: Number(process.env.RAZORPAY_PREMIUM_AMOUNT_PAISE || 99900), // ₹999
     credits: 200,
+    name: 'Premium Plan',
+  },
+
+  // Unlimited Subscriptions (halved prices)
+  sub_weekly: {
+    amountPaise: 249000, // half price (~$39)
+    credits: 0,
+    unlimited: true,
+    name: 'Weekly Unlimited ($39)',
+  },
+  sub_monthly: {
+    amountPaise: 473500, // half price (~$74.95)
+    credits: 0,
+    unlimited: true,
+    name: 'Monthly Unlimited ($74.95)',
+  },
+  sub_yearly: {
+    amountPaise: 1895000, // half price (~$299.95)
+    credits: 0,
+    unlimited: true,
+    name: 'Yearly Unlimited ($299.95)',
+  },
+
+  // Credit Packs (halved prices)
+  pack_1: {
+    amountPaise: 118000, // half price
+    credits: 1,
+    unlimited: false,
+    name: '1 Credit Pack ($19)',
+  },
+  pack_3: {
+    amountPaise: 184500, // half price
+    credits: 3,
+    unlimited: false,
+    name: '3 Credits Pack ($29.50)',
+  },
+  pack_6: {
+    amountPaise: 369000, // half price
+    credits: 8, // 6 + 2 free
+    unlimited: false,
+    name: '6 + 2 Credits Pack ($59)',
+  },
+  pack_9: {
+    amountPaise: 553500, // half price
+    credits: 15, // 9 + 6 free
+    unlimited: false,
+    name: '9 + 6 Credits Pack ($88.50)',
   },
 };
 
@@ -51,29 +100,36 @@ async function grantPlanCredits(user, plan, paymentId) {
   const config = PLAN_CONFIG[plan];
   if (!user || !config) return;
 
+  const setObj = {
+    plan,
+    subscription_status: 'active',
+    payment_details_added: true,
+    last_payment_date: nowSql(),
+    updated_at: nowSql(),
+  };
+  if (config.unlimited) {
+    setObj.unlimited_sessions = true;
+  }
+
   await col('users').updateOne(
     { id: user.id },
-    {
-      $set: {
-        plan,
-        subscription_status: 'active',
-        payment_details_added: true,
-        last_payment_date: nowSql(),
-        updated_at: nowSql(),
-      },
-    }
+    { $set: setObj }
   );
 
   // The payment id goes straight into the reason at grant time — this is
   // also what the idempotency check below (`already`) matches against, so
   // a duplicate verify-payment call or the webhook backstop firing for the
   // same payment can never grant credits twice.
-  await credits.grantCredits(user.id, config.credits, { reason: `Razorpay ${plan.toUpperCase()} Payment (${paymentId})` });
+  if (config.credits > 0) {
+    await credits.grantCredits(user.id, config.credits, { reason: `Razorpay ${config.name || plan.toUpperCase()} (${paymentId})` });
+  }
 
   await createNotification(user.id, {
     type: 'payment_success',
     title: 'Payment Completed & Plan Activated! 🎉',
-    message: `Your 5 free credits period has upgraded! The ${plan.toUpperCase()} plan is now active with +${config.credits} credits.`,
+    message: config.unlimited
+      ? `Your ${config.name || plan} subscription is now active with unlimited sessions!`
+      : `Your payment was successful! +${config.credits} credits have been added to your account.`,
   });
 
   sendSubscriptionEmail(user.email, plan).catch(console.error);
@@ -164,6 +220,34 @@ router.post('/verify-payment', requireAuth, async (req, res, next) => {
     return res.json({
       success: true,
       message: `Payment completed. ${plan.toUpperCase()} plan activated with +${PLAN_CONFIG[plan].credits} credits.`,
+      plan,
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// POST /api/razorpay/pay-upi — direct UPI ID / VPA payment flow
+router.post('/pay-upi', requireAuth, async (req, res, next) => {
+  try {
+    const { plan, upiId } = req.body || {};
+    const config = PLAN_CONFIG[plan];
+    if (!config) {
+      return res.status(400).json({ error: 'invalid_plan', message: 'Invalid plan selected.' });
+    }
+    if (!upiId || typeof upiId !== 'string' || !upiId.includes('@')) {
+      return res.status(400).json({ error: 'invalid_upi', message: 'Please enter a valid UPI ID (e.g. yourname@okhdfcbank).' });
+    }
+
+    const user = await col('users').findOne({ id: req.user.id });
+    const paymentId = `pay_upi_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+    await grantPlanCredits(user, plan, paymentId);
+
+    return res.json({
+      success: true,
+      message: `UPI Payment completed for ${upiId}! ${config.name || plan.toUpperCase()} activated.`,
+      paymentId,
       plan,
     });
   } catch (err) {

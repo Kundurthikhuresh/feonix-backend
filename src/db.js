@@ -109,6 +109,9 @@ class MemoryCollection {
       if (key === '_id' || key === 'id' || key === 'sid' || key === 'email' || key === 'user_id') {
         if (item[key] !== query[key]) return false;
       } else if (typeof query[key] === 'object' && query[key] !== null) {
+        if (query[key].$in !== undefined && Array.isArray(query[key].$in)) {
+          if (!query[key].$in.includes(item[key])) return false;
+        }
         if (query[key].$gte !== undefined && !(item[key] >= query[key].$gte)) return false;
         if (query[key].$lte !== undefined && !(item[key] <= query[key].$lte)) return false;
         if (query[key].$gt !== undefined && !(item[key] > query[key].$gt)) return false;
@@ -391,6 +394,33 @@ async function loadDocContent(userId, kind, maxChars) {
   return row ? String(row.content).slice(0, maxChars) : '';
 }
 
+/**
+ * Batch-loads multiple document kinds for a user in a single database query.
+ * Eliminates sequential round-trips over the network.
+ */
+async function loadAllUserDocs(userId, kinds = ['resume', 'experience', 'job_description', 'company'], maxChars = 8000) {
+  const map = {};
+  for (const k of kinds) map[k] = '';
+  if (!userId) return map;
+
+  try {
+    const rows = await col('documents')
+      .find({ user_id: userId, kind: { $in: kinds } })
+      .sort({ is_active: -1, id: -1 })
+      .toArray();
+
+    for (const row of rows) {
+      if (!map[row.kind] && row.content) {
+        map[row.kind] = String(row.content).slice(0, maxChars);
+      }
+    }
+    return map;
+  } catch (err) {
+    console.warn('loadAllUserDocs query failed, falling back to empty map:', err.message);
+    return map;
+  }
+}
+
 async function sessionTokensUsed(sessionId) {
   const rows = await col('usage').aggregate([
     { $match: { session_id: sessionId } },
@@ -416,5 +446,6 @@ module.exports = {
   reserveUsage,
   settleUsage,
   loadDocContent,
+  loadAllUserDocs,
   sessionTokensUsed,
 };

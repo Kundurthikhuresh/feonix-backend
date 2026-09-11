@@ -18,7 +18,8 @@ const quota = require('./quota');
 const { technicalTerms } = require('./modes');
 const { rateLimit } = require('./rateLimit');
 
-const MODEL = process.env.TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+const RAW_MODEL = process.env.TRANSCRIBE_MODEL || 'whisper-1';
+const MODEL = RAW_MODEL.includes('transcribe') ? 'whisper-1' : RAW_MODEL;
 const MAX_CHUNK_BYTES = 10 * 1024 * 1024;
 
 // Held against the quota while a chunk is in flight, then replaced by the real
@@ -155,6 +156,26 @@ const HALLUCINATIONS = [
   'muchas gracias por ver', 'hangi zarzı', 'hangi zarzi',
 ];
 
+const HALLUCINATION_REGEXES = [
+  /transcrib(ed|tion|ing)\s+by/i,
+  /subtitles?\s+by/i,
+  /captions?\s+by/i,
+  /closed\s+captions/i,
+  /amara\.org/i,
+  /otter\.ai/i,
+  /https?:\/\//i,
+  /www\./i,
+  /\bopenai\b/i,
+  /thank(s|\s+you)\s+for\s+(watching|listening)/i,
+  /like\s+and\s+subscribe/i,
+  /subscribe\s+to\s+(my\s+)?channel/i,
+  /see\s+you\s+(in\s+the\s+next|next\s+time)/i,
+  /bye\s*bye/i,
+  /^\[.*\]$/,
+  /^\(.*\)$/,
+  /[♪♫]/,
+];
+
 const CJK_REGEX = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\uac00-\ud7af]/;
 const CYRILLIC_REGEX = /[\u0400-\u04ff]/;
 const ARABIC_REGEX = /[\u0600-\u06ff]/;
@@ -167,6 +188,10 @@ const MULTILINGUAL_HALLUCINATIONS = [
 function isHallucination(sentence, sessionLang = 'en') {
   const trimmed = String(sentence || '').trim();
   if (!trimmed) return true;
+
+  for (const regex of HALLUCINATION_REGEXES) {
+    if (regex.test(trimmed)) return true;
+  }
 
   const lang = String(sessionLang || 'en').toLowerCase();
 
@@ -188,6 +213,22 @@ function isHallucination(sentence, sessionLang = 'en') {
   return HALLUCINATIONS.some((h) => n === h.replace(/[^a-z0-9 ]+/g, '').trim());
 }
 
+function deduplicateSentences(text) {
+  if (!text || typeof text !== 'string') return '';
+  const parts = text.split(/(?<=[?.!])\s+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length <= 1) return text.trim();
+
+  const unique = [];
+  for (const part of parts) {
+    const norm = part.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const lastNorm = unique.length ? unique[unique.length - 1].toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    if (norm && norm !== lastNorm) {
+      unique.push(part);
+    }
+  }
+  return unique.join(' ');
+}
+
 function stripPromptEcho(text, prompt, sessionLang = 'en') {
   // Falls back to the base prompt so any caller that does not pass one keeps
   // the original protection rather than losing it.
@@ -201,7 +242,8 @@ function stripPromptEcho(text, prompt, sessionLang = 'en') {
       return !isPromptEcho(sentence, wordsets);
     });
 
-  const cleaned = sentences.join(' ').trim();
+  const rawCleaned = sentences.join(' ').trim();
+  const cleaned = deduplicateSentences(rawCleaned);
   // Nothing but the echo, or a bare fragment left behind — treat as silence.
   return cleaned.length < 2 ? '' : cleaned;
 }
@@ -243,7 +285,7 @@ router.post(
   transcribeLimiter,
   express.raw({ type: () => true, limit: MAX_CHUNK_BYTES }),
   async (req, res, next) => {
-    if (!Buffer.isBuffer(req.body) || req.body.length < 3000) {
+    if (!Buffer.isBuffer(req.body) || req.body.length < 1500) {
       return res.json({ text: '' });
     }
 
@@ -256,8 +298,14 @@ router.post(
       });
     }
 
-    const { sessionExists, getSession } = require('./sessions');
-    const used = await tokensUsedThisMonth(req.user.id);
+    const { getSession } = require('./sessions');
+    const requestedSessionId = req.get('X-Session-Id');
+
+    const [used, session] = await Promise.all([
+      tokensUsedThisMonth(req.user.id),
+      requestedSessionId ? getSession(req.user.id, requestedSessionId) : Promise.resolve(null),
+    ]);
+
     const gate = quota.check(req.user, used, RESERVE_TOKENS);
     if (gate.blocked) {
       return res.status(429).json({
@@ -267,13 +315,12 @@ router.post(
       });
     }
 
-    const sessionId = await sessionExists(req.user.id, req.get('X-Session-Id'));
+    const sessionId = session ? session.id : null;
     const usageId = await reserveUsage(req.user.id, MODEL, 0, RESERVE_TOKENS, sessionId);
     let inputTokens = 0;
     let outputTokens = 0;
 
     try {
-      const session = sessionId ? await getSession(req.user.id, sessionId) : null;
       const contentType = req.get('Content-Type') || 'audio/webm';
       const result = await transcribeAudio(req.body, filename, contentType, session);
 

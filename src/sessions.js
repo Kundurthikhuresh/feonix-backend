@@ -21,7 +21,8 @@ async function enrichSession(session) {
   const s = publicDoc(session);
   if (s.expires_at || s.started_at) {
     const expiredByExpiresAt = s.expires_at && isExpired(s.expires_at);
-    const expiredByStartedAt = s.started_at && minutesBetween(s.started_at, nowSql()) >= 15;
+    const limitMin = (s.billing_kind === 'trial' || s.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+    const expiredByStartedAt = s.started_at && minutesBetween(s.started_at, nowSql()) >= limitMin;
     if ((expiredByExpiresAt || expiredByStartedAt) && s.status !== 'ended') {
       s.status = 'ended';
       s.ended_at = s.ended_at || s.expires_at || nowSql();
@@ -179,11 +180,12 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
 
-    // Once expired after 15 minutes, a session cannot be restarted — create a new session
+    // Once expired, a session cannot be restarted — create a new session
     if (owned.expires_at && isExpired(owned.expires_at)) {
+      const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
       return res.status(410).json({
         error: 'session_expired',
-        message: 'This session has expired after 15 minutes. Please create a new session.',
+        message: `This session has expired after ${limitMin} minutes. Please create a new session.`,
       });
     }
 
@@ -202,7 +204,8 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
 
     const forceKind = opened.kind === 'unlimited';
     const isFirstStart = !owned.started_at;
-    const sessionMinutes = opened.minutes || credits.TRIAL_MINUTES || 15;
+    const defaultMinutes = (opened.kind === 'trial' || requested === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+    const sessionMinutes = opened.minutes || defaultMinutes;
     const $set = {
       status: 'active',
       plan: owned.plan || (opened.kind === 'trial' ? 'free' : 'full'),
@@ -225,7 +228,8 @@ router.post('/:id/resume', requireAuth, async (req, res, next) => {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
 
-    const newExpiresAt = addMinutesFromNow(15);
+    const resumeMinutes = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+    const newExpiresAt = addMinutesFromNow(resumeMinutes);
     await col('call_sessions').updateOne(
       { id: owned.id },
       { $set: { status: 'active', expires_at: newExpiresAt, ended_at: null } }

@@ -13,13 +13,13 @@
 // both read the same "tokens used" figure and both decide they fit.
 
 const express = require('express');
-const { col, nowSql, isExpired, addMinutesFromNow, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
+const { col, nowSql, isExpired, addMinutesFromNow, loadDocContent, loadAllUserDocs, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
 const { requireAuth } = require('./auth');
 const { openai } = require('./openai-client');
 const { rateLimit } = require('./rateLimit');
 const {
   SESSION_TYPES, ACTIONS, DEFAULT_TYPE, DEFAULT_ACTION, systemPromptFor, catalogue,
-  groundingBlock, classifyQuestion,
+  groundingBlock, classifyQuestion, isCodingQuestion,
 } = require('./modes');
 const { saveAnswer } = require('./history');
 const credits = require('./credits');
@@ -237,15 +237,28 @@ function buildMessages({
     );
   }
 
+  const questionType = classifyQuestion(question);
+  const isCoding = questionType === 'CODING' || isCodingQuestion(question) || answerStyle === 'code';
+  const isBehavioral = questionType === 'BEHAVIORAL';
+
   let styleInstruction = '';
-  if (answerStyle === 'star') {
-    styleInstruction = '\n## Required Format: STAR Method\nStructure answer clearly with Situation, Task, Action, and Measurable Result.';
+  if (isCoding && answerStyle !== 'teleprompter' && answerStyle !== 'quiz') {
+    styleInstruction = '\n## Required Format: Rapid & Concise Code Solution (< 3 Seconds)\n' +
+      '1. Working Code: Provide complete, runnable code inside a standard markdown code block (```<language>\\n...code...\\n```) with clear comments.\n' +
+      '2. In-Depth Explanation: Give a direct, 2-sentence explanation of how the logic executes.\n' +
+      '3. Complexity: State Time and Space Complexity with Big-O notation.\n' +
+      'CRITICAL: Keep the response tight, sharp, and focused so it generates completely within 3 seconds.';
+  } else if (answerStyle === 'star' && isBehavioral) {
+    styleInstruction = '\n## Required Format: STAR Method (< 3 Seconds)\nStructure answer concisely with Situation, Task, Action, and Measurable Result in 4 impactful sentences.';
   } else if (answerStyle === 'code') {
-    styleInstruction = '\n## Required Format: Optimal Code Solution\nProvide clean, production-ready code with step-by-step logic, followed by Time Complexity and Space Complexity analysis.';
+    styleInstruction = '\n## Required Format: Optimal Code Solution (< 3 Seconds)\nProvide clean, production-ready code inside a standard markdown code block (```<language>\\n...code...\\n```), followed by a 2-sentence description and Big-O Complexity.';
   } else if (answerStyle === 'teleprompter') {
-    styleInstruction = '\n## Required Format: Stealth Teleprompter Hints\nProvide 3-4 concise, high-impact bullet points designed for a candidate to glance at and say out loud naturally.';
+    styleInstruction = '\n## Required Format: Stealth Teleprompter Hints\nProvide 3 concise, high-impact bullet points designed for a candidate to glance at and say out loud naturally.';
   } else if (answerStyle === 'quiz') {
     styleInstruction = '\n## Required Format: Multiple Choice Solver\nState the correct Option/Letter first in bold, followed by a concise 2-sentence rationale.';
+  } else {
+    styleInstruction = '\n## Required Format: Ultra-Fast Direct Answer (< 2.5 Seconds)\n' +
+      'Deliver 2-3 concise, high-impact speaking beats under [POINTS], and 2-3 direct, authoritative sentences under [ANSWER] (under 75 words). Answer the question immediately with zero filler.';
   }
 
   volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question) + styleInstruction);
@@ -282,6 +295,7 @@ function buildMessages({
 
 function sse(res, event, payload) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  if (typeof res.flush === 'function') res.flush();
 }
 
 // Lets the client render the persona and action lists without hardcoding them.
@@ -294,10 +308,15 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
   const answerStyle = req.body && req.body.answerStyle;
   const action = ACTIONS[req.body && req.body.action] ? req.body.action : DEFAULT_ACTION;
 
-  // Unknown or someone else's session id attributes to nothing rather than
-  // failing the call — a bad id shouldn't cost the user their answer.
+  // Parallel pre-flight fetch: session, candidate documents, and quota all in one round-trip
   const { getSession } = require('./sessions');
-  const session = await getSession(req.user.id, req.body && req.body.session_id);
+  const requestedSessionId = req.body && req.body.session_id;
+
+  const [session, docs, used] = await Promise.all([
+    requestedSessionId ? getSession(req.user.id, requestedSessionId) : Promise.resolve(null),
+    loadAllUserDocs(req.user.id, ['resume', 'experience', 'job_description', 'company'], MAX_DOC_CHARS),
+    tokensUsedThisMonth(req.user.id),
+  ]);
   const sessionId = session ? session.id : null;
 
   // The session's own settings win over the request body: the call was
@@ -350,10 +369,10 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
   const messages = buildMessages({
     question,
     transcript,
-    resume: await loadDoc(req.user.id, 'resume'),
-    experience: await loadDoc(req.user.id, 'experience'),
-    jobDescription: await loadDoc(req.user.id, 'job_description'),
-    company: await loadDoc(req.user.id, 'company'),
+    resume: docs.resume || '',
+    experience: docs.experience || '',
+    jobDescription: docs.job_description || '',
+    company: docs.company || '',
     // A job description written for THIS call beats the one filed globally.
     sessionJobDescription: session && session.job_description,
     sessionCompany: session && session.company,
@@ -368,20 +387,11 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
 
   /* ---- token safety-rail (credits are the real entitlement) --------- */
 
-  // Multimodal message content is an array of parts (text + one image_url
-  // per attached screenshot), not a string — joining it directly used to
-  // stringify each part as "[object Object]", silently estimating ~0 real
-  // tokens for however many images were attached. That under-count let a
-  // multi-screenshot request slip past the quota gate below almost for
-  // free. ~1100 tokens/image is a conservative estimate for how OpenAI
-  // actually tokenizes an image in this size range — good enough for a
-  // safety rail, not meant to match billed usage exactly.
   const TOKENS_PER_IMAGE_ESTIMATE = 1100;
   const textContent = messages
     .map((m) => (typeof m.content === 'string' ? m.content : (m.content || []).filter((p) => p.type === 'text').map((p) => p.text).join('\n')))
     .join('\n');
   const promptEstimate = estimateTokens(textContent) + images.length * TOKENS_PER_IMAGE_ESTIMATE;
-  const used = await tokensUsedThisMonth(req.user.id);
   const gate = quota.check(req.user, used, promptEstimate + MIN_USEFUL_OUTPUT_TOKENS);
 
   if (gate.blocked) {
@@ -393,7 +403,13 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
     });
   }
 
-  const maxOutputTokens = quota.outputBudget(MAX_OUTPUT_TOKENS, gate.remaining, promptEstimate);
+  // Fast response token budget: Calibrated so full generation completes in under 2.5 seconds
+  const isCoding = classifyQuestion(question) === 'CODING' || isCodingQuestion(question) || answerStyle === 'code';
+  const FAST_TOKEN_CAP = isCoding ? 280 : 150;
+  const maxOutputTokens = Math.min(
+    FAST_TOKEN_CAP,
+    quota.outputBudget(MAX_OUTPUT_TOKENS, gate.remaining, promptEstimate)
+  );
 
   // Charged now, corrected in the finally block below.
   const chosenModel = modelFor(session);
@@ -401,12 +417,26 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
 
   /* ---- stream ----------------------------------------------------- */
 
+  // Immediate SSE header transmission & socket noDelay to eliminate upstream proxy latency
+  res.status(200).set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // don't let a reverse proxy buffer the stream
+  });
+  if (res.socket) res.socket.setNoDelay(true);
+  res.flushHeaders();
+  let headersSent = true;
+
+  // Immediate event to prime downstream reader
+  res.write(': stream-start\n\n');
+  if (typeof res.flush === 'function') res.flush();
+
   const controller = new AbortController();
   let replyText = '';
   let answerChars = 0;
   let reportedUsage = null;
   let truncated = false;
-  let headersSent = false;
   let fatalError = null;
 
   // If the browser goes away mid-answer, stop paying for the rest of it.
@@ -417,22 +447,13 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
       {
         model: chosenModel,
         messages,
-        temperature: 0.3,
+        temperature: 0.25,
         max_completion_tokens: maxOutputTokens,
         stream: true,
         stream_options: { include_usage: true },
       },
       { signal: controller.signal }
     );
-
-    res.status(200).set({
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no', // don't let a reverse proxy buffer the stream
-    });
-    res.flushHeaders();
-    headersSent = true;
 
     for await (const chunk of stream) {
       if (chunk.usage) reportedUsage = chunk.usage;
@@ -521,6 +542,7 @@ module.exports = {
   router,
   buildMessages,
   classifyQuestion,
+  isCodingQuestion,
   modelFor,
   estimateTokens,
   answerLimiter,
