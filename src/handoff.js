@@ -52,7 +52,7 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
       token,
       session_id: session.id,
       expires_in_ms: TTL_MS,
-      deep_link: `${SCHEME}://launch?token=${token}&session=${session.id}`,
+      deep_link: `${SCHEME}://launch?token=${token}&session=${session.id}&action=start_session&start=open`,
     });
   } catch (err) {
     next(err);
