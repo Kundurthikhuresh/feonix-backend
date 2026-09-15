@@ -45,7 +45,7 @@ const MAX_IMAGE_BYTES = 24 * 1024 * 1024;   // several screenshots in one reques
 const MAX_SCREENSHOTS = 5;
 // Code answers need materially more room than a spoken reply: a full solution
 // plus complexity and edge cases does not fit in 900.
-const MAX_OUTPUT_TOKENS = Number(process.env.MAX_VISION_OUTPUT_TOKENS || 1600);
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_VISION_OUTPUT_TOKENS || 4000);
 
 // A screenshot is worth far more prompt tokens than a sentence of speech, and
 // the real figure only arrives with the response. Reserve enough to cover a
@@ -58,18 +58,15 @@ const SYSTEM_PROMPT = [
   'You are looking at a screenshot taken during a live interview. The candidate',
   'pressed one key and typed nothing — work out what is on screen and answer it.',
   '',
-  'First decide what kind of content this is, then answer in the shape it needs:',
+  'First decide what kind of content this is, then provide an exhaustive, production-grade response of AT LEAST 50 LINES:',
   '',
-  '- Coding problem: give the approach, then working code, then time and space',
-  '  complexity. Name the edge cases that break a naive solution.',
-  '- SQL: give the query, then one line on why it is shaped that way.',
-  '- System design: lead with the architecture in five or six beats, then the',
-  '  bottleneck and the trade-off you are making.',
-  '- Debugging or a stack trace: name the probable cause first, then the fix.',
-  '- Behavioural question: answer in the first person from the resume provided.',
-  '- Multiple choice: state the answer, then one line of justification.',
-  '- Diagram, slide, spreadsheet or document: say what it shows and answer any',
-  '  question visible on it.',
+  '- Coding problem: give the overall approach, complete runnable working code, line-by-line detailed logic walkthrough, edge cases, failure modes, and Big-O time and space complexity with rigorous rationale across at least 50 lines.',
+  '- SQL: give the optimized query, execution plan explanation, indexing strategy, edge cases, and architectural reasoning across at least 50 lines.',
+  '- System design: provide end-to-end architecture, API design, data model, component interactions, bottlenecks, scaling strategies, and trade-offs across at least 50 lines.',
+  '- Debugging or a stack trace: state the exact root cause, fix, step-by-step diagnostic breakdown, preventive engineering measures, and corrected runnable code across at least 50 lines.',
+  '- Behavioural question: answer in the first person using comprehensive STAR methodology across at least 50 lines.',
+  '- Multiple choice: state the correct option/letter first in bold, followed by an exhaustive breakdown of why each choice is correct or incorrect across at least 50 lines.',
+  '- Diagram, slide, spreadsheet or document: provide an in-depth, thorough analysis of what is shown, the technical principles, and complete solutions across at least 50 lines.',
   '',
   'Rules for anything technical:',
   '- Read the WHOLE problem off the screen before answering, including examples,',
@@ -93,13 +90,15 @@ const SYSTEM_PROMPT = [
   'describing the page. If nothing on screen is a question, summarise what is',
   'shown and say what you would ask about it.',
   '',
+  'CRITICAL LENGTH REQUIREMENT: Provide AT LEAST 50 LINES of substantive, deep, and complete information.',
+  '',
   'Reply in exactly this format, tags on their own lines:',
   '',
   '[TYPE] coding | sql | system_design | debugging | behavioral | mcq | other',
   '[POINTS]',
   '- three to six fragments, the beats to say out loud',
   '[ANSWER]',
-  'The full answer. Include code in a fenced block when the content calls for it.',
+  'The full, exhaustive answer of at least 50 lines. Include code in a fenced block when the content calls for it.',
 ].join('\n');
 
 router.post(

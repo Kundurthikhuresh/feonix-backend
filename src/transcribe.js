@@ -18,8 +18,7 @@ const quota = require('./quota');
 const { technicalTerms } = require('./modes');
 const { rateLimit } = require('./rateLimit');
 
-const RAW_MODEL = process.env.TRANSCRIBE_MODEL || 'whisper-1';
-const MODEL = RAW_MODEL.includes('transcribe') ? 'whisper-1' : RAW_MODEL;
+const MODEL = process.env.TRANSCRIBE_MODEL || 'whisper-1';
 const MAX_CHUNK_BYTES = 10 * 1024 * 1024;
 
 // Held against the quota while a chunk is in flight, then replaced by the real

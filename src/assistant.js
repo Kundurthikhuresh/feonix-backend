@@ -1,22 +1,33 @@
 const express = require('express');
 const { openai } = require('./openai-client');
+const { requireAuth } = require('./auth');
+const { rateLimit } = require('./rateLimit');
 
 const router = express.Router();
+
+// Same shape as every other AI-cost route (answerLimiter in answer.js,
+// visionLimiter in vision.js) — this route was previously reachable with no
+// auth and no limiter at all, spending the server's OpenAI key on every call.
+const assistantLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  keyFn: (req) => `assistant:${req.user.id}`,
+});
 
 const SYSTEM_PROMPT = `You are "Feonix Assistant", the AI copilot for Feonix AI (https://feonixai.com).
 Your purpose is to assist software engineers, tech professionals, and interviewees in acing technical interviews, system design rounds, live coding challenges, and career growth.
 
 Voice & Demeanor:
 - You speak naturally, warmly, confidently, and like an articulate, world-class technical mentor.
-- Keep your answers concise, direct, engaging, and clear (ideal for being spoken aloud naturally by text-to-speech).
-- When explaining complex ideas, structure them with crisp bullet points or short paragraphs.
-- Be encouraging and enthusiastic about engineering and interview success.
+- Deliver comprehensive, in-depth, and exhaustive information of AT LEAST 50 LINES for questions, breaking down core concepts, runtime mechanics, code implementations, architecture, trade-offs, edge cases, and real-world examples.
+- When explaining complex ideas, structure them with clear section headings, structured bullet points, and code examples.
+- Be encouraging, authoritative, and thorough.
 
-Always provide high-value, actionable, technically precise guidance. If you don't know something, say so rather than guessing.`;
+Always provide high-value, actionable, technically precise guidance with maximum depth.`;
 
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-router.post('/chat', async (req, res) => {
+router.post('/chat', requireAuth, assistantLimiter, async (req, res) => {
   const { message, history = [] } = req.body;
 
   if (!message || typeof message !== 'string') {
@@ -36,7 +47,7 @@ router.post('/chat', async (req, res) => {
     const completion = await openai().chat.completions.create({
       model: MODEL,
       messages,
-      max_completion_tokens: 350,
+      max_completion_tokens: 3500,
       temperature: 0.7,
     });
 
