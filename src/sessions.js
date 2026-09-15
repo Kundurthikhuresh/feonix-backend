@@ -113,6 +113,26 @@ router.post('/', requireAuth, async (req, res, next) => {
       });
     }
 
+    // Deduplication check:
+    // If the same user created an identical session within the last 15 seconds that is
+    // still in 'ready' status (e.g. from accidental double-clicks or client retries),
+    // return the existing session rather than creating duplicate sessions and deducting credits.
+    const recentThreshold = new Date(Date.now() - 15000).toISOString().replace('T', ' ').slice(0, 19);
+    const existingRecent = await col('call_sessions').findOne({
+      user_id: req.user.id,
+      company,
+      role,
+      mode,
+      status: 'ready',
+      created_at: { $gte: recentThreshold },
+    });
+    if (existingRecent) {
+      return res.status(200).json({
+        session: await enrichSession(existingRecent),
+        account: await credits.accountSummary(req.user.id),
+      });
+    }
+
     const id = await nextId('call_sessions');
 
     // Deduct 1 trial credit (or verify paid credit entitlement) when creating a session

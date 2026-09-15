@@ -52,7 +52,6 @@ const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 4000);
 // A call that can't afford at least this much output isn't worth starting.
 const MIN_USEFUL_OUTPUT_TOKENS = 64;
 
-const MAX_QUESTION_CHARS = 2000;
 const MAX_TRANSCRIPT_CHARS = 6000;
 // Each is already downscaled/compressed client-side (see
 // frontend/src/services/screenshotService.js), so this is a sanity cap
@@ -250,22 +249,22 @@ function buildMessages({
       '4. Edge Cases & Safety: Enumerate key edge cases, boundary conditions, potential failure modes, and handling strategies.\n' +
       '5. Complexity Analysis: Rigorous Time and Space Complexity analysis with Big-O notation and clear mathematical rationale.\n' +
       '6. Alternative Approaches: Compare with alternative algorithms and detail the engineering trade-offs.\n' +
-      'CRITICAL: Provide an exhaustive, deeply informative response of AT LEAST 50 LINES.';
+      'CRITICAL: Provide an exhaustive, deeply informative response of AT LEAST 50 SENTENCES.';
   } else if (answerStyle === 'star' && isBehavioral) {
     styleInstruction = '\n## Required Format: Comprehensive STAR Method (At Least 50 Lines)\n' +
-      'Structure the answer thoroughly with Situation, Task, Action, and Measurable Result across AT LEAST 50 LINES of detailed information, detailing architecture, technical decisions, implementation steps, and concrete metrics.';
+      'Structure the answer thoroughly with Situation, Task, Action, and Measurable Result across AT LEAST 50 SENTENCES of detailed information, detailing architecture, technical decisions, implementation steps, and concrete metrics.';
   } else if (answerStyle === 'code') {
     styleInstruction = '\n## Required Format: Optimal Code Solution (At Least 50 Lines)\n' +
-      'Provide clean, production-ready code inside a standard markdown code block (```<language>\\n...code...\\n```), followed by an exhaustive line-by-line description, trade-offs, edge cases, and Big-O Complexity across AT LEAST 50 LINES.';
+      'Provide clean, production-ready code inside a standard markdown code block (```<language>\\n...code...\\n```), followed by an exhaustive line-by-line description, trade-offs, edge cases, and Big-O Complexity across AT LEAST 50 SENTENCES.';
   } else if (answerStyle === 'teleprompter') {
     styleInstruction = '\n## Required Format: Stealth Teleprompter Hints (Comprehensive Depth)\n' +
-      'Provide structured speaking beats under [POINTS] and an exhaustive, comprehensive breakdown under [ANSWER] of AT LEAST 50 LINES covering all details, mechanics, and examples.';
+      'Provide structured speaking beats under [POINTS] and an exhaustive, comprehensive breakdown under [ANSWER] of AT LEAST 50 SENTENCES covering all details, mechanics, and examples.';
   } else if (answerStyle === 'quiz') {
     styleInstruction = '\n## Required Format: Multiple Choice Solver (In-Depth Analysis)\n' +
-      'State the correct Option/Letter first in bold, followed by an exhaustive, comprehensive explanation and concept breakdown of AT LEAST 50 LINES analyzing why each option is correct or incorrect.';
+      'State the correct Option/Letter first in bold, followed by an exhaustive, comprehensive explanation and concept breakdown of AT LEAST 50 SENTENCES analyzing why each option is correct or incorrect.';
   } else {
     styleInstruction = '\n## Required Format: In-Depth Comprehensive Answer (At Least 50 Lines)\n' +
-      'Deliver 4-6 key speaking beats under [POINTS], and an exhaustive, deeply informative technical breakdown under [ANSWER] of AT LEAST 50 LINES covering concepts, architecture, execution steps, real-world examples, trade-offs, and best practices.';
+      'Deliver 4-6 key speaking beats under [POINTS], and an exhaustive, deeply informative technical breakdown under [ANSWER] of AT LEAST 50 SENTENCES covering concepts, architecture, execution steps, real-world examples, trade-offs, and best practices.';
   }
 
   volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question) + styleInstruction);
@@ -377,12 +376,10 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
   if (needsQuestion && !question) {
     return res.status(400).json({ error: 'missing_question', message: 'question is required.' });
   }
-  if (question.length > MAX_QUESTION_CHARS) {
-    return res.status(413).json({
-      error: 'question_too_long',
-      message: `Question must be under ${MAX_QUESTION_CHARS} characters.`,
-    });
-  }
+  // No length cap on the question itself — the only remaining ceiling is the
+  // global express.json({limit:'4mb'}) body-size guard in server.js, which
+  // exists to bound raw request-body memory use, not to police how long a
+  // question is allowed to be.
 
   // Keep the tail — the newest turns are the ones that matter, and an
   // unbounded transcript is the easiest way to burn a quota by accident.

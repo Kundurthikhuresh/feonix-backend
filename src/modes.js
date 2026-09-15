@@ -23,8 +23,8 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
       '[ANSWER]',
       lengthRule,
       '',
-      'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 LINES):',
-      'Provide an exhaustive, deeply informative, production-grade response of AT LEAST 50 LINES with maximum technical rigor and zero fluff:',
+      'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 SENTENCES):',
+      'Provide an exhaustive, deeply informative, production-grade response of AT LEAST 50 SENTENCES with maximum technical rigor and zero fluff:',
       '1. COMPLETE WORKING CODE: Clean, production-ready, fully runnable code in a standard markdown code block (```<language> ... ```) with rich comments explaining non-trivial logic.',
       '2. DEEP LINE-BY-LINE LOGIC EXPLANATION: Comprehensive step-by-step walkthrough of how every function, loop, conditional branch, and helper executes.',
       '3. ARCHITECTURAL & DATA STRUCTURE CHOICES: In-depth rationale for chosen data structures, memory layout, and runtime considerations.',
@@ -43,8 +43,8 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
     '[ANSWER]',
     lengthRule,
     '',
-    'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 LINES):',
-    'Provide an exhaustive, deeply informative, authoritative response of AT LEAST 50 LINES covering the topic with deep technical rigor, practical nuance, and complete depth:',
+    'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 SENTENCES):',
+    'Provide an exhaustive, deeply informative, authoritative response of AT LEAST 50 SENTENCES covering the topic with deep technical rigor, practical nuance, and complete depth:',
     '1. CORE CONCEPTS & DEFINITIONS: Thorough explanation of the fundamental principles and underlying mechanisms.',
     '2. ARCHITECTURE & INTERNAL MECHANICS: How it works under the hood in production environments, memory/runtime lifecycle, and key components.',
     '3. STEP-BY-STEP METHODOLOGY & WORKFLOW: Concrete execution steps, implementation workflows, and industry-standard best practices.',
@@ -52,7 +52,7 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
     '5. COMMON PITFALLS, FAILURE MODES & TROUBLESHOOTING: What breaks, how to diagnose it, and defensive engineering practices.',
     '6. ENGINEERING TRADE-OFFS & COMPARISONS: Detailed analysis of pros & cons versus alternative designs or tools.',
     '',
-    'For [TYPE] behavioral, structure points using STAR and provide an exhaustive narrative across at least 50 lines covering background context, constraints, multi-step actions, and measurable business outcomes.',
+    'For [TYPE] behavioral, structure points using STAR and provide an exhaustive narrative across at least 50 sentences covering background context, constraints, multi-step actions, and measurable business outcomes.',
     'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points.',
   ].join('\n');
 }
@@ -150,23 +150,23 @@ function classifyQuestion(question) {
  */
 const TYPE_LENGTH_RULES = {
   CODING:
-    'Deliver an exhaustive, production-grade technical response of AT LEAST 50 LINES: Provide complete, runnable code in a markdown block (```<language> ... ```) with clear inline comments. Follow with a line-by-line execution walkthrough, deep explanation of logic conditions and helper routines, architectural trade-offs, edge cases (empty, boundary, overflow), detailed Time & Space complexity analysis with Big-O proofs, and comparison against alternative algorithmic strategies.',
+    'Deliver an exhaustive, production-grade technical response of AT LEAST 50 SENTENCES: Provide complete, runnable code in a markdown block (```<language> ... ```) with clear inline comments. Follow with a line-by-line execution walkthrough, deep explanation of logic conditions and helper routines, architectural trade-offs, edge cases (empty, boundary, overflow), detailed Time & Space complexity analysis with Big-O proofs, and comparison against alternative algorithmic strategies.',
   YES_NO:
-    'Deliver an exhaustive, deeply informative response of AT LEAST 50 LINES: State the direct answer upfront, then provide a comprehensive technical and architectural deep dive: the underlying engineering principles, production evidence, trade-offs, configuration nuances, failure modes, benchmarks, and real-world enterprise examples.',
+    'Deliver an exhaustive, deeply informative response of AT LEAST 50 SENTENCES: State the direct answer upfront, then provide a comprehensive technical and architectural deep dive: the underlying engineering principles, production evidence, trade-offs, configuration nuances, failure modes, benchmarks, and real-world enterprise examples.',
   SHORT_DIRECT:
-    'Deliver an authoritative, comprehensive technical response of AT LEAST 50 LINES: Answer the core question directly, followed by an exhaustive breakdown of the technical mechanism, runtime lifecycle, underlying architecture, edge cases, configuration best practices, and real-world system applications.',
+    'Deliver an authoritative, comprehensive technical response of AT LEAST 50 SENTENCES: Answer the core question directly, followed by an exhaustive breakdown of the technical mechanism, runtime lifecycle, underlying architecture, edge cases, configuration best practices, and real-world system applications.',
   EXPERIENCE:
-    'Deliver an in-depth, comprehensive engineering narrative of AT LEAST 50 LINES: Detail your exact depth of experience, technical stack evolution, production architectures engineered, end-to-end operational workflows, major challenges overcome, specific performance metrics, and concrete lessons learned.',
+    'Deliver an in-depth, comprehensive engineering narrative of AT LEAST 50 SENTENCES: Detail your exact depth of experience, technical stack evolution, production architectures engineered, end-to-end operational workflows, major challenges overcome, specific performance metrics, and concrete lessons learned.',
   BEHAVIORAL:
-    'Deliver an exhaustive STAR methodology response of AT LEAST 50 LINES: Thoroughly detail the Situation (context, system complexity, team dynamics), the specific Task & technical challenges, the multi-step Actions (architectural decisions, technologies leveraged, cross-functional coordination, debugging workflows), and the measurable Results (quantitative impact, business outcomes, latency improvements, long-term takeaways).',
+    'Deliver an exhaustive STAR methodology response of AT LEAST 50 SENTENCES: Thoroughly detail the Situation (context, system complexity, team dynamics), the specific Task & technical challenges, the multi-step Actions (architectural decisions, technologies leveraged, cross-functional coordination, debugging workflows), and the measurable Results (quantitative impact, business outcomes, latency improvements, long-term takeaways).',
   TECHNICAL:
-    'Deliver an exhaustive, authoritative technical deep-dive of AT LEAST 50 LINES: Define the core mechanism under the hood, how it executes in memory and production runtimes, underlying data structures, step-by-step lifecycle flow, key engineering trade-offs, failure modes and debugging strategies, and industry best practices.',
+    'Deliver an exhaustive, authoritative technical deep-dive of AT LEAST 50 SENTENCES: Define the core mechanism under the hood, how it executes in memory and production runtimes, underlying data structures, step-by-step lifecycle flow, key engineering trade-offs, failure modes and debugging strategies, and industry best practices.',
   SCENARIO:
-    'Deliver an exhaustive, production-ready scenario walkthrough of AT LEAST 50 LINES: Incident triage sequence, initial stabilization steps, systematic root cause analysis, architecture isolation, live remediation, verification checks, and defensive post-mortem preventive measures.',
+    'Deliver an exhaustive, production-ready scenario walkthrough of AT LEAST 50 SENTENCES: Incident triage sequence, initial stabilization steps, systematic root cause analysis, architecture isolation, live remediation, verification checks, and defensive post-mortem preventive measures.',
   MOTIVATION:
-    'Deliver a deeply reasoned, substantive response of AT LEAST 50 LINES: Connect the company\'s mission and architecture with your technical philosophy, engineering challenges you are eager to tackle, specific contributions you will make, and long-term technical growth.',
+    'Deliver a deeply reasoned, substantive response of AT LEAST 50 SENTENCES: Connect the company\'s mission and architecture with your technical philosophy, engineering challenges you are eager to tackle, specific contributions you will make, and long-term technical growth.',
   CLARIFICATION:
-    'Deliver a comprehensive, crystal-clear explanation of AT LEAST 50 LINES: Clarify the core concept directly, followed by an exhaustive analysis of technical nuances, edge cases, common misconceptions, and concrete real-world examples.',
+    'Deliver a comprehensive, crystal-clear explanation of AT LEAST 50 SENTENCES: Clarify the core concept directly, followed by an exhaustive analysis of technical nuances, edge cases, common misconceptions, and concrete real-world examples.',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
 
@@ -182,7 +182,7 @@ function pointsRuleFor(type) {
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: Deliver an exhaustive, deeply informative response of AT LEAST 50 LINES' +
+  'What to say out loud: Deliver an exhaustive, deeply informative response of AT LEAST 50 SENTENCES' +
   ' covering background context, core mechanics, step-by-step breakdown, architecture, real-world practical examples, edge cases, and best practices.';
 
 /**
@@ -193,8 +193,12 @@ function explicitLengthRule(context) {
   const m = String(context || '').match(/(\d{1,3})\s*(?:short\s*)?(?:lines?|sentences?|points?)/i);
   if (!m) return null;
   const n = Math.max(1, Math.min(100, Number(m[1])));
-  return `What to say out loud: provide an exhaustive, deeply informative breakdown of AT LEAST ${n} detailed lines of rich technical information. ` +
-         `Cover concepts, mechanics, step-by-step execution, real-world examples, and trade-offs across at least ${n} substantive lines.`;
+  // gpt-4o-mini reliably follows an explicit SENTENCE count but quietly
+  // ignores a "lines" or word-count target (see the QA note above
+  // TYPE_LENGTH_RULES) — a request for "N lines" is translated into a
+  // sentence count for that reason, not just relabelled.
+  return `What to say out loud: provide an exhaustive, deeply informative breakdown of AT LEAST ${n} SENTENCES of rich technical information — do not stop short of ${n} sentences. ` +
+         `Cover concepts, mechanics, step-by-step execution, real-world examples, and trade-offs across at least ${n} substantive sentences.`;
 }
 
 const CONTEXT_LENGTH_RULE =
@@ -328,10 +332,10 @@ const SHARED_RULES = [
   '  "additionally", "furthermore", "lastly": those are for writing.',
   '- Do not fake being human. No filler words, no invented hesitation, no',
   '  deliberate mistakes. Natural means accurate and plainly said.',
-  '- Comprehensive & in-depth: Deliver an exhaustive, high-substance answer of AT LEAST 50 LINES of rich technical detail, covering all aspects, nuances, architecture, practical execution steps, and edge cases.',
+  '- Comprehensive & in-depth: Deliver an exhaustive, high-substance answer of AT LEAST 50 SENTENCES of rich technical detail, covering all aspects, nuances, architecture, practical execution steps, and edge cases.',
   '- Code Requests vs Conceptual Questions:',
-  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, runnable code in a standard markdown code block (```<language> ... ```) accompanied by an exhaustive, line-by-line breakdown of the approach, how it executes, edge cases, and Big-O complexity across at least 50 lines. Never give only a verbal description when code is requested.',
-  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an exhaustive, deeply informative explanation of at least 50 lines without unnecessary code blocks.',
+  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, runnable code in a standard markdown code block (```<language> ... ```) accompanied by an exhaustive, line-by-line breakdown of the approach, how it executes, edge cases, and Big-O complexity across at least 50 sentences. Never give only a verbal description when code is requested.',
+  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an exhaustive, deeply informative explanation of at least 50 sentences without unnecessary code blocks.',
 ].join('\n');
 
 const SESSION_TYPES = {

@@ -21,8 +21,16 @@ class MongoSessionStore extends session.Store {
     try {
       await col('sessions').deleteMany({ expires: { $lte: Date.now() } });
     } catch (err) {
-      if (String(err.message || '').includes('not connected')) return;
-      this.emit('error', err);
+      // A background maintenance sweep must never be able to take the whole
+      // server down. This used to emit('error', err) for anything other
+      // than the DB-not-yet-connected-at-startup case — and since nothing
+      // anywhere registers an 'error' listener on this store, Node's default
+      // EventEmitter behavior for an unheard 'error' event is to throw it as
+      // an uncaught exception and kill the process. A transient DNS/network
+      // blip during this hourly sweep (e.g. MongoServerSelectionError /
+      // ENOTFOUND) should just skip this cycle and retry next time, not
+      // disconnect every active session on the server.
+      console.error('[session-store] prune failed, will retry next cycle:', err.message);
     }
   }
 
