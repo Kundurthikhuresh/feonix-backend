@@ -398,7 +398,7 @@ router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio')
 
       if (!answerGate.blocked) {
         const chosenModel = modelFor(owned);
-        const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 900);
+        const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 4000);
         const budget = quota.outputBudget(MAX_OUTPUT_TOKENS, answerGate.remaining, promptEstimate);
         const answerUsageId = await reserveUsage(req.user.id, chosenModel, promptEstimate, budget, owned.id);
 
@@ -507,7 +507,7 @@ router.post('/:id/questions', requireAuth, answerLimiter, async (req, res, next)
     }
 
     const chosenModel = modelFor(owned);
-    const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 900);
+    const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 4000);
     const budget = quota.outputBudget(MAX_OUTPUT_TOKENS, gate.remaining, promptEstimate);
     const usageId = await reserveUsage(req.user.id, chosenModel, promptEstimate, budget, owned.id);
 

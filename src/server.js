@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config(); // Feonix AI API Server Loaded
 
 const dns = require('dns');
 try { dns.setDefaultResultOrder('ipv4first'); } catch {}
@@ -55,7 +55,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(null, true);
+      callback(null, false);
     }
   },
   credentials: true,

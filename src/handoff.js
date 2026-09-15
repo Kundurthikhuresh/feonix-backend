@@ -80,16 +80,12 @@ router.post('/:id/launch-desktop', requireAuth, async (req, res, next) => {
       created_at: nowSql(),
     });
 
+    // Launching the desktop app is the client's job (see launch/page.js,
+    // which navigates to deep_link itself) — this route used to also exec()
+    // a hardcoded local Windows path on the server process, which only ever
+    // made sense if the API happened to run on the same machine as the
+    // desktop app. That's not how a hosted backend works, so it's removed.
     const deepLink = `${SCHEME}://launch?token=${token}&session=${sessionId}&action=start_session&start=open`;
-    if (process.platform === 'win32') {
-      const { exec } = require('child_process');
-      exec(`start "" "${deepLink}"`, (err) => {
-        if (err) {
-          const exePath = 'C:\\Users\\arsha\\AppData\\Local\\Programs\\FeonixAI\\FeonixAI.exe';
-          exec(`"${exePath}" "${deepLink}"`, () => {});
-        }
-      });
-    }
 
     res.json({
       ok: true,
@@ -115,6 +111,12 @@ router.post('/redeem', express.json(), async (req, res, next) => {
       return res.status(401).json({
         error: 'token_expired',
         message: 'That link expired. Start the session again from the dashboard.',
+      });
+    }
+    if (row.used_at) {
+      return res.status(401).json({
+        error: 'token_used',
+        message: 'That link was already used. Start the session again from the dashboard.',
       });
     }
 

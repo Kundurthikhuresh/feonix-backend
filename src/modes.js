@@ -19,38 +19,41 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
       '',
       '[TYPE] coding',
       '[POINTS]',
-      pointsRule || '- 3 punchy fragments: approach, syntax/structures, time/space complexity',
+      pointsRule || '- 3 to 5 key architecture, data structure & algorithm speaking beats',
       '[ANSWER]',
       lengthRule,
       '',
-      'CRITICAL SPEED & CONCISENESS REQUIREMENT (< 5 SECONDS):',
-      'The entire answer MUST stream and complete in under 5 seconds. Be direct, clear, and high-impact.',
-      '1. COMPLETE WORKING CODE: Provide clean, production-ready runnable code in a standard markdown code block (```<language> ... ```) with clear, helpful comments.',
-      '2. CODE EXPLANATION: Provide a direct, highly relevant explanation of that specific code — explain step-by-step how each condition, line, or block executes.',
-      '3. KEY NUANCES: Highlight essential edge cases, syntax nuances, or safety considerations for that specific code.',
-      '4. TIME & SPACE COMPLEXITY: Explicitly state Time Complexity and Space Complexity with Big-O notation and clear rationale.',
-      '5. FAST & FOCUSED: Deliver the primary optimal solution directly without multiple redundant variations so it completes within 5 seconds.',
+      'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 LINES):',
+      'Provide an exhaustive, deeply informative, production-grade response of AT LEAST 50 LINES with maximum technical rigor and zero fluff:',
+      '1. COMPLETE WORKING CODE: Clean, production-ready, fully runnable code in a standard markdown code block (```<language> ... ```) with rich comments explaining non-trivial logic.',
+      '2. DEEP LINE-BY-LINE LOGIC EXPLANATION: Comprehensive step-by-step walkthrough of how every function, loop, conditional branch, and helper executes.',
+      '3. ARCHITECTURAL & DATA STRUCTURE CHOICES: In-depth rationale for chosen data structures, memory layout, and runtime considerations.',
+      '4. EDGE CASES & FAILURE MODES: Exhaustive list of edge cases (e.g. empty/null inputs, single elements, overflow, duplicates, boundary limits) and defensive mitigations.',
+      '5. RIGOROUS COMPLEXITY ANALYSIS: Detailed Time Complexity and Space Complexity breakdown with Big-O notation, covering best, average, and worst cases with clear mathematical reasoning.',
+      '6. ALTERNATIVE APPROACHES & OPTIMIZATIONS: Compare with alternative solutions (e.g. brute force vs two-pointer vs dynamic programming vs hash map), detailing engineering trade-offs.',
     ].join('\n');
   }
 
   return [
     'Reply in exactly this format, tags on their own lines:',
     '',
-    '[TYPE] behavioral | technical | other',
+    '[TYPE] behavioral | technical | scenario | experience | motivation | other',
     '[POINTS]',
-    pointsRule || '- three to four fragments, six words or fewer each, the key speaking beats',
+    pointsRule || '- 4 to 6 punchy, high-impact key speaking beats',
     '[ANSWER]',
     lengthRule,
     '',
-    'CRITICAL SPEED & CONCISENESS REQUIREMENT (< 5 SECONDS):',
-    'The answer MUST complete within 5 seconds. Speak with authoritative brevity: 3 to 4 punchy, concrete sentences that answer the question directly with technical substance and zero filler.',
-    'No headings, no bullet lists, no corporate polish, no repeating the question back.',
+    'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 LINES):',
+    'Provide an exhaustive, deeply informative, authoritative response of AT LEAST 50 LINES covering the topic with deep technical rigor, practical nuance, and complete depth:',
+    '1. CORE CONCEPTS & DEFINITIONS: Thorough explanation of the fundamental principles and underlying mechanisms.',
+    '2. ARCHITECTURE & INTERNAL MECHANICS: How it works under the hood in production environments, memory/runtime lifecycle, and key components.',
+    '3. STEP-BY-STEP METHODOLOGY & WORKFLOW: Concrete execution steps, implementation workflows, and industry-standard best practices.',
+    '4. REAL-WORLD PRODUCTION SCENARIOS & EXAMPLES: In-depth production examples illustrating the concept in action with concrete metrics and decisions.',
+    '5. COMMON PITFALLS, FAILURE MODES & TROUBLESHOOTING: What breaks, how to diagnose it, and defensive engineering practices.',
+    '6. ENGINEERING TRADE-OFFS & COMPARISONS: Detailed analysis of pros & cons versus alternative designs or tools.',
     '',
-    'For [TYPE] behavioral, the points must be STAR and prefixed exactly:',
-    '  - S: the situation, - T: the task, - A: what you did, - R: the outcome.',
-    'For [TYPE] technical, the points are the load-bearing steps or concepts, in',
-    'the order you would say them.',
-    'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points like "No specific experience".',
+    'For [TYPE] behavioral, structure points using STAR and provide an exhaustive narrative across at least 50 lines covering background context, constraints, multi-step actions, and measurable business outcomes.',
+    'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points.',
   ].join('\n');
 }
 
@@ -147,54 +150,51 @@ function classifyQuestion(question) {
  */
 const TYPE_LENGTH_RULES = {
   CODING:
-    'Provide the runnable code in a markdown code block (```<language> ... ```), followed by a concise, step-by-step breakdown of that specific code, key edge cases, and Time & Space Complexity analysis. Keep it under 220 words for instant delivery.',
+    'Deliver an exhaustive, production-grade technical response of AT LEAST 50 LINES: Provide complete, runnable code in a markdown block (```<language> ... ```) with clear inline comments. Follow with a line-by-line execution walkthrough, deep explanation of logic conditions and helper routines, architectural trade-offs, edge cases (empty, boundary, overflow), detailed Time & Space complexity analysis with Big-O proofs, and comparison against alternative algorithmic strategies.',
   YES_NO:
-    'What to say out loud: 3 sentences. Answer directly in the first one — yes, no, or the qualifier — then use the rest for the specific evidence behind it. Punchy, confident, and direct.',
+    'Deliver an exhaustive, deeply informative response of AT LEAST 50 LINES: State the direct answer upfront, then provide a comprehensive technical and architectural deep dive: the underlying engineering principles, production evidence, trade-offs, configuration nuances, failure modes, benchmarks, and real-world enterprise examples.',
   SHORT_DIRECT:
-    'Answer the core question directly and authoritatively in 2 to 3 sentences with concrete technical substance.',
+    'Deliver an authoritative, comprehensive technical response of AT LEAST 50 LINES: Answer the core question directly, followed by an exhaustive breakdown of the technical mechanism, runtime lifecycle, underlying architecture, edge cases, configuration best practices, and real-world system applications.',
   EXPERIENCE:
-    'State plainly your depth of experience in 3 to 4 sentences, followed by concrete tools, architecture, and a specific real-world example.',
+    'Deliver an in-depth, comprehensive engineering narrative of AT LEAST 50 LINES: Detail your exact depth of experience, technical stack evolution, production architectures engineered, end-to-end operational workflows, major challenges overcome, specific performance metrics, and concrete lessons learned.',
   BEHAVIORAL:
-    'Deliver a concise 4-sentence STAR answer (Situation, Task, Action, Measurable Result) highlighting your technical methodology and concrete outcome.',
+    'Deliver an exhaustive STAR methodology response of AT LEAST 50 LINES: Thoroughly detail the Situation (context, system complexity, team dynamics), the specific Task & technical challenges, the multi-step Actions (architectural decisions, technologies leveraged, cross-functional coordination, debugging workflows), and the measurable Results (quantitative impact, business outcomes, latency improvements, long-term takeaways).',
   TECHNICAL:
-    'Deliver a crisp, authoritative technical answer in 3 to 4 sentences: define the core concept/mechanism under the hood, how it executes in production, and the key engineering trade-offs.',
+    'Deliver an exhaustive, authoritative technical deep-dive of AT LEAST 50 LINES: Define the core mechanism under the hood, how it executes in memory and production runtimes, underlying data structures, step-by-step lifecycle flow, key engineering trade-offs, failure modes and debugging strategies, and industry best practices.',
   SCENARIO:
-    'Walk through the first action, order of execution, failure mode anticipated, and verification in 3 to 4 direct sentences.',
+    'Deliver an exhaustive, production-ready scenario walkthrough of AT LEAST 50 LINES: Incident triage sequence, initial stabilization steps, systematic root cause analysis, architecture isolation, live remediation, verification checks, and defensive post-mortem preventive measures.',
   MOTIVATION:
-    'Provide a specific, credible reason tied to this role and company in 2 to 3 sentences with concrete detail.',
+    'Deliver a deeply reasoned, substantive response of AT LEAST 50 LINES: Connect the company\'s mission and architecture with your technical philosophy, engineering challenges you are eager to tackle, specific contributions you will make, and long-term technical growth.',
   CLARIFICATION:
-    'Clarify the relevant point directly and precisely in 1 to 2 sentences.',
+    'Deliver a comprehensive, crystal-clear explanation of AT LEAST 50 LINES: Clarify the core concept directly, followed by an exhaustive analysis of technical nuances, edge cases, common misconceptions, and concrete real-world examples.',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
 
 /** How many [POINTS] fragments suit this type. */
 function pointsRuleFor(type) {
   if (type === 'CODING') {
-    return '- three fragments: algorithm approach, data structure/syntax, time and space complexity';
+    return '- 3 to 5 key fragments: algorithm approach, data structures, execution flow, time/space complexity';
   }
   if (['YES_NO', 'SHORT_DIRECT', 'CLARIFICATION'].includes(type)) {
-    return '- two to three fragments, six words or fewer each, the key speaking beats';
+    return '- 3 to 5 high-impact fragments summarizing the core stance and technical pillars';
   }
-  return '- three to four fragments, six words or fewer each, the key speaking beats';
+  return '- 4 to 6 punchy, high-impact key speaking beats covering the major discussion milestones';
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: 3 to 4 sentences — concise, high-impact, directly answering' +
-  ' the question with real substance and no filler.';
+  'What to say out loud: Deliver an exhaustive, deeply informative response of AT LEAST 50 LINES' +
+  ' covering background context, core mechanics, step-by-step breakdown, architecture, real-world practical examples, edge cases, and best practices.';
 
 /**
- * "Answer in 10 lines" is the phrasing users reach for, and gpt-4o-mini simply
- * ignores it — measured: 76 words against a 92-word default, i.e. no effect.
- * A sentence count is followed reliably, so a numeric length request is
- * translated into one rather than passed through verbatim.
+ * Parses user numeric line requests (e.g. "answer in 50 lines", "give 60 lines").
+ * Supports requests up to 100 lines.
  */
 function explicitLengthRule(context) {
-  const m = String(context || '').match(/(\d{1,2})\s*(?:short\s*)?(?:lines?|sentences?|points?)/i);
+  const m = String(context || '').match(/(\d{1,3})\s*(?:short\s*)?(?:lines?|sentences?|points?)/i);
   if (!m) return null;
-  const n = Math.max(1, Math.min(25, Number(m[1])));
-  return `What to say out loud: exactly ${n} sentences, one per line of speech, ` +
-         `roughly ${n * 18} words in total. Do not stop short of ${n} sentences ` +
-         'and do not exceed them.';
+  const n = Math.max(1, Math.min(100, Number(m[1])));
+  return `What to say out loud: provide an exhaustive, deeply informative breakdown of AT LEAST ${n} detailed lines of rich technical information. ` +
+         `Cover concepts, mechanics, step-by-step execution, real-world examples, and trade-offs across at least ${n} substantive lines.`;
 }
 
 const CONTEXT_LENGTH_RULE =
@@ -328,10 +328,10 @@ const SHARED_RULES = [
   '  "additionally", "furthermore", "lastly": those are for writing.',
   '- Do not fake being human. No filler words, no invented hesitation, no',
   '  deliberate mistakes. Natural means accurate and plainly said.',
-  '- Fast & high-impact: Deliver the core answer directly with real substance and zero filler. Do not generate verbose padding or extra paragraphs.',
+  '- Comprehensive & in-depth: Deliver an exhaustive, high-substance answer of AT LEAST 50 LINES of rich technical detail, covering all aspects, nuances, architecture, practical execution steps, and edge cases.',
   '- Code Requests vs Conceptual Questions:',
-  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, runnable code in a standard markdown code block (```<language> ... ```) accompanied by a concise description of the approach, how it works, and Big-O complexity. Never give only a verbal description when code is requested.',
-  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide a thorough, clear description and spoken explanation without unnecessary code blocks.',
+  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, runnable code in a standard markdown code block (```<language> ... ```) accompanied by an exhaustive, line-by-line breakdown of the approach, how it executes, edge cases, and Big-O complexity across at least 50 lines. Never give only a verbal description when code is requested.',
+  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an exhaustive, deeply informative explanation of at least 50 lines without unnecessary code blocks.',
 ].join('\n');
 
 const SESSION_TYPES = {
@@ -493,5 +493,6 @@ module.exports = {
   isCodingQuestion,
   technicalTerms,
   groundingBlock,
+  explicitLengthRule,
   catalogue,
 };

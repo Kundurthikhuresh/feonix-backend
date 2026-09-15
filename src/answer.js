@@ -19,7 +19,7 @@ const { openai } = require('./openai-client');
 const { rateLimit } = require('./rateLimit');
 const {
   SESSION_TYPES, ACTIONS, DEFAULT_TYPE, DEFAULT_ACTION, systemPromptFor, catalogue,
-  groundingBlock, classifyQuestion, isCodingQuestion,
+  groundingBlock, classifyQuestion, isCodingQuestion, explicitLengthRule,
 } = require('./modes');
 const { saveAnswer } = require('./history');
 const credits = require('./credits');
@@ -47,7 +47,7 @@ function modelFor(session) {
 // headroom above the default length rules in modes.js (now 9-14 spoken lines
 // per answer) so a longer explicit request ("answer in 20 lines") or a
 // [ANSWER] deepen still has room instead of hitting the truncation backstop.
-const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 1600);
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS || 4000);
 
 // A call that can't afford at least this much output isn't worth starting.
 const MIN_USEFUL_OUTPUT_TOKENS = 64;
@@ -243,33 +243,55 @@ function buildMessages({
 
   let styleInstruction = '';
   if (isCoding && answerStyle !== 'teleprompter' && answerStyle !== 'quiz') {
-    styleInstruction = '\n## Required Format: Rapid & Concise Code Solution (< 3 Seconds)\n' +
-      '1. Working Code: Provide complete, runnable code inside a standard markdown code block (```<language>\\n...code...\\n```) with clear comments.\n' +
-      '2. In-Depth Explanation: Give a direct, 2-sentence explanation of how the logic executes.\n' +
-      '3. Complexity: State Time and Space Complexity with Big-O notation.\n' +
-      'CRITICAL: Keep the response tight, sharp, and focused so it generates completely within 3 seconds.';
+    styleInstruction = '\n## Required Format: Exhaustive Code Solution (At Least 50 Lines)\n' +
+      '1. Working Code: Provide complete, runnable code inside a standard markdown code block (```<language>\\n...code...\\n```) with comprehensive comments.\n' +
+      '2. In-Depth Logic Breakdown: Provide an exhaustive, line-by-line explanation of how each function, loop, and condition executes.\n' +
+      '3. Architecture & Data Structures: Detail the underlying data structures, design choices, and memory/runtime considerations.\n' +
+      '4. Edge Cases & Safety: Enumerate key edge cases, boundary conditions, potential failure modes, and handling strategies.\n' +
+      '5. Complexity Analysis: Rigorous Time and Space Complexity analysis with Big-O notation and clear mathematical rationale.\n' +
+      '6. Alternative Approaches: Compare with alternative algorithms and detail the engineering trade-offs.\n' +
+      'CRITICAL: Provide an exhaustive, deeply informative response of AT LEAST 50 LINES.';
   } else if (answerStyle === 'star' && isBehavioral) {
-    styleInstruction = '\n## Required Format: STAR Method (< 3 Seconds)\nStructure answer concisely with Situation, Task, Action, and Measurable Result in 4 impactful sentences.';
+    styleInstruction = '\n## Required Format: Comprehensive STAR Method (At Least 50 Lines)\n' +
+      'Structure the answer thoroughly with Situation, Task, Action, and Measurable Result across AT LEAST 50 LINES of detailed information, detailing architecture, technical decisions, implementation steps, and concrete metrics.';
   } else if (answerStyle === 'code') {
-    styleInstruction = '\n## Required Format: Optimal Code Solution (< 3 Seconds)\nProvide clean, production-ready code inside a standard markdown code block (```<language>\\n...code...\\n```), followed by a 2-sentence description and Big-O Complexity.';
+    styleInstruction = '\n## Required Format: Optimal Code Solution (At Least 50 Lines)\n' +
+      'Provide clean, production-ready code inside a standard markdown code block (```<language>\\n...code...\\n```), followed by an exhaustive line-by-line description, trade-offs, edge cases, and Big-O Complexity across AT LEAST 50 LINES.';
   } else if (answerStyle === 'teleprompter') {
-    styleInstruction = '\n## Required Format: Stealth Teleprompter Hints\nProvide 3 concise, high-impact bullet points designed for a candidate to glance at and say out loud naturally.';
+    styleInstruction = '\n## Required Format: Stealth Teleprompter Hints (Comprehensive Depth)\n' +
+      'Provide structured speaking beats under [POINTS] and an exhaustive, comprehensive breakdown under [ANSWER] of AT LEAST 50 LINES covering all details, mechanics, and examples.';
   } else if (answerStyle === 'quiz') {
-    styleInstruction = '\n## Required Format: Multiple Choice Solver\nState the correct Option/Letter first in bold, followed by a concise 2-sentence rationale.';
+    styleInstruction = '\n## Required Format: Multiple Choice Solver (In-Depth Analysis)\n' +
+      'State the correct Option/Letter first in bold, followed by an exhaustive, comprehensive explanation and concept breakdown of AT LEAST 50 LINES analyzing why each option is correct or incorrect.';
   } else {
-    styleInstruction = '\n## Required Format: Ultra-Fast Direct Answer (< 2.5 Seconds)\n' +
-      'Deliver 2-3 concise, high-impact speaking beats under [POINTS], and 2-3 direct, authoritative sentences under [ANSWER] (under 75 words). Answer the question immediately with zero filler.';
+    styleInstruction = '\n## Required Format: In-Depth Comprehensive Answer (At Least 50 Lines)\n' +
+      'Deliver 4-6 key speaking beats under [POINTS], and an exhaustive, deeply informative technical breakdown under [ANSWER] of AT LEAST 50 LINES covering concepts, architecture, execution steps, real-world examples, trade-offs, and best practices.';
   }
 
   volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question) + styleInstruction);
 
   let userVolatileContent;
   if (images && images.length) {
-    const promptText = volatile.join('\n\n') || (
-      images.length > 1
-        ? `Analyze the question across these ${images.length} screenshots and provide the optimal solution/answer.`
-        : 'Analyze the question in this screenshot and provide the optimal solution/answer.'
-    );
+    /* A screenshot arrives with little or no typed question, so classifyQuestion()
+     * on the (often empty) question text falls through to OPEN_ENDED and the model
+     * gets none of the screen-reading guidance the (unused) /api/vision route
+     * already has. Prepending it here gives screenshot answers through this
+     * endpoint the same quality without a second request path. */
+    const visionGuidance =
+      'These images are a screenshot taken during a live interview. First work out ' +
+      'what kind of content this is — a coding problem, SQL, system design, a ' +
+      'debugging/stack-trace, a behavioral or multiple-choice question, or a ' +
+      'diagram/slide — and answer in the shape that kind of question needs. Read ' +
+      'the WHOLE problem on screen before answering, including examples, ' +
+      'constraints, and any starter code. If code is already on screen, analyse ' +
+      'THAT code rather than substituting a different problem. Use the language ' +
+      'shown on screen, or Python if none is specified. When several screenshots ' +
+      'are supplied, treat them as one continuous task captured in order.';
+    const promptText = volatile.length
+      ? `${visionGuidance}\n\n${volatile.join('\n\n')}`
+      : `${visionGuidance}\n\n${images.length > 1
+          ? `Analyze the question across these ${images.length} screenshots and provide the optimal solution/answer.`
+          : 'Analyze the question in this screenshot and provide the optimal solution/answer.'}`;
     userVolatileContent = [
       { type: 'text', text: promptText },
       ...images.map((img) => ({
@@ -403,13 +425,19 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
     });
   }
 
-  // Fast response token budget: Calibrated so full generation completes in under 2.5 seconds
-  const isCoding = classifyQuestion(question) === 'CODING' || isCodingQuestion(question) || answerStyle === 'code';
-  const FAST_TOKEN_CAP = isCoding ? 280 : 150;
-  const maxOutputTokens = Math.min(
-    FAST_TOKEN_CAP,
-    quota.outputBudget(MAX_OUTPUT_TOKENS, gate.remaining, promptEstimate)
-  );
+  /* Fast response token budget: sized to the format actually requested, so
+   * the answer isn't cut off before it satisfies its own instructions. The
+   * old flat 150/280 split cut off STAR (needs ~250-300) and any screenshot
+   * (needs room for a full code+explanation+complexity answer) well before
+   * the model could finish what the prompt told it to write. */
+  const questionType = classifyQuestion(question);
+  const isCoding = questionType === 'CODING' || isCodingQuestion(question) || answerStyle === 'code';
+  const isBehavioral = questionType === 'BEHAVIORAL' && answerStyle === 'star';
+  const hasImages = images.length > 0;
+  const hasExplicitLength = Boolean(session && session.context && explicitLengthRule(session.context));
+
+  // Token budget: allow full output capacity so answers can meet the 50+ lines requirement
+  const maxOutputTokens = quota.outputBudget(MAX_OUTPUT_TOKENS, gate.remaining, promptEstimate);
 
   // Charged now, corrected in the finally block below.
   const chosenModel = modelFor(session);
