@@ -21,16 +21,16 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
       '[POINTS]',
       pointsRule || '- 3 to 5 key architecture, data structure & algorithm speaking beats',
       '[ANSWER]',
-      lengthRule,
-      '',
-      'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 SENTENCES):',
-      'Provide an exhaustive, deeply informative, production-grade response of AT LEAST 50 SENTENCES with maximum technical rigor and zero fluff:',
-      '1. COMPLETE WORKING CODE: Clean, production-ready, fully runnable code in a standard markdown code block (```<language> ... ```) with rich comments explaining non-trivial logic.',
-      '2. DEEP LINE-BY-LINE LOGIC EXPLANATION: Comprehensive step-by-step walkthrough of how every function, loop, conditional branch, and helper executes.',
-      '3. ARCHITECTURAL & DATA STRUCTURE CHOICES: In-depth rationale for chosen data structures, memory layout, and runtime considerations.',
-      '4. EDGE CASES & FAILURE MODES: Exhaustive list of edge cases (e.g. empty/null inputs, single elements, overflow, duplicates, boundary limits) and defensive mitigations.',
-      '5. RIGOROUS COMPLEXITY ANALYSIS: Detailed Time Complexity and Space Complexity breakdown with Big-O notation, covering best, average, and worst cases with clear mathematical reasoning.',
-      '6. ALTERNATIVE APPROACHES & OPTIMIZATIONS: Compare with alternative solutions (e.g. brute force vs two-pointer vs dynamic programming vs hash map), detailing engineering trade-offs.',
+      'CRITICAL CHATGPT-GRADE FULL CODE DIRECTIVE (ZERO PLACEHOLDERS / COMPLETE WORKING CODE):',
+      'Provide the 100% COMPLETE, production-ready, fully runnable code inside standard markdown code block(s) (```<language> ... ```).',
+      '1. COMPLETE IMPLEMENTATION: Output the full code without truncating, omitting, or taking shortcuts. Include all imports, class declarations, constructors, fields, getters/setters, helper methods, business logic, and error handling.',
+      '2. STRICTLY NO PLACEHOLDERS: NEVER use comments like "// TODO: implement", "// ...", "// rest of code", or ellipsis (...). Every method and routine must be fully coded.',
+      '3. MULTI-FILE OR MULTI-CLASS SYSTEMS: If the problem asks for multiple classes or files, write out EACH file completely with clear file path headings.',
+      '4. POST-CODE TECHNICAL BREAKDOWN:',
+      '   - Step-by-step logic walkthrough of how the code executes.',
+      '   - Design choices, data structures, and edge cases handled.',
+      '   - Time & Space Complexity analysis using Big-O notation.',
+      '   - Instructions on how to compile and run the code.',
     ].join('\n');
   }
 
@@ -64,20 +64,40 @@ function isCodingQuestion(text) {
   const q = String(text || '').toLowerCase().trim();
   if (!q) return false;
 
+  // Code block or markdown code markers present
+  if (/```|`[a-z0-9_().]+`/i.test(q)) return true;
+
   // Direct code / program / syntax / implementation keywords
-  if (/\b(example|sample|demo|snippet|syntax)\s+code\b/i.test(q)) return true;
+  if (/\b(example|sample|demo|snippet|syntax|source)\s+code\b/i.test(q)) return true;
   if (/\bcode\s+(example|sample|demo|snippet|template|syntax|solution)\b/i.test(q)) return true;
-  if (/\b(write|create|implement|provide|generate|give|show|build|develop|solve|draft|need|want|share)\b.*?\b(code|program|script|function|class|method|query|algorithm|snippet|solution|component|syntax)\b/i.test(q)) return true;
+  if (/\b(write|create|implement|provide|generate|give|show|build|develop|solve|draft|need|want|share)\b.*?\b(code|program|script|function|class|method|query|algorithm|snippet|solution|component|syntax|api|backend|frontend|system|app|application|service)\b/i.test(q)) return true;
   if (/\b(write\s+a?\s*code|write\s+code|code\s+(for|to|of|in|that|addition|subtraction|multiplication|division)|coding\s+question|coding\s+problem)\b/i.test(q)) return true;
-  if (/\b(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|regex)\s+(code|script|program|solution|function|implementation|snippet|syntax)\b/i.test(q)) return true;
-  if (/\b(code|function|program|script|solution|implementation|snippet|syntax)\s+(in|using|with|for)\s+(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell)\b/i.test(q)) return true;
+
+  // Programming languages mentioned in combination with code, tasks, or systems
+  const langRegex = /\b(python|javascript|typescript|java|c\+\+|cpp|c#|csharp|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|scala|dart|r|regex)\b/i;
+  if (langRegex.test(q)) {
+    if (/\b(using|in|with|via)\s+(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|scala|dart|r)\b/i.test(q)) return true;
+    if (/\b(code|script|program|solution|function|implementation|snippet|syntax|class|method|app|application|system|project|algorithm)\b/i.test(q)) return true;
+  }
+
   if (/\b(with|in)\s+code\b/i.test(q)) return true;
   if (/\b(write\s+(a\s+)?python|write\s+(a\s+)?javascript|write\s+(a\s+)?typescript|write\s+(a\s+)?java|write\s+(a\s+)?c\+\+|write\s+(a\s+)?cpp|write\s+(a\s+)?sql|write\s+(a\s+)?query)\b/i.test(q)) return true;
   if (/\b(sql\s+query|select\s+.*\s+from|insert\s+into|update\s+.*\s+set|delete\s+from|create\s+table)\b/i.test(q)) return true;
-  if (/\b(leetcode|hackerrank|codewars)\b/i.test(q)) return true;
+  if (/\b(leetcode|hackerrank|codewars|codeforces)\b/i.test(q)) return true;
   if (/\b(write\s+a\s+program|write\s+program|program\s+to\s+[a-z]+|function\s+to\s+[a-z]+)\b/i.test(q)) return true;
-  if (/\b(implement|code|program)\s+(a\s+|an\s+|the\s+)?([a-z0-9_-]+\s+)?(binary search|quicksort|mergesort|dfs|bfs|dijkstra|lru cache|linked list|stack|queue|tree|heap|two sum|fibonacci|palindrome|reverse|if condition|while loop|for loop)\b/i.test(q)) return true;
+
+  // Data structures & algorithms
+  if (/\b(implement|code|program|build|create|design)\s+(a\s+|an\s+|the\s+)?([a-z0-9_-]+\s+)?(binary search|quicksort|mergesort|dfs|bfs|dijkstra|lru cache|linked list|stack|queue|tree|heap|two sum|fibonacci|palindrome|reverse|if condition|while loop|for loop|graph|trie|dynamic programming|recursion)\b/i.test(q)) return true;
   if (/\b(if\s+condition|for\s+loop|while\s+loop|switch\s+case)\s+code\b/i.test(q)) return true;
+
+  // Software projects, systems, architectures, assignments
+  if (/\b(banking|library|inventory|hospital|school|hotel|student|employee|management\s+system)\b/i.test(q) && (langRegex.test(q) || /\b(menu|console|oop|object-oriented|class|classes)\b/i.test(q))) return true;
+  if (/\b(full\s+code|give\s+full\s+code|complete\s+code|source\s+code|entire\s+code)\b/i.test(q)) return true;
+  if (/\b(rest\s+api|crud|mvc|database|spring\s+boot|express|django|flask|react|nextjs)\b/i.test(q) && /\b(create|build|write|implement|code)\b/i.test(q)) return true;
+
+  // Code syntax tokens in prompt (e.g. pasted code to fix/complete)
+  if (/\b(def|class|public\s+static\s+void|import\s+java|const|let|var|function\*?|#include|package\s+com)\b/.test(q)) return true;
+
   return false;
 }
 
@@ -150,7 +170,7 @@ function classifyQuestion(question) {
  */
 const TYPE_LENGTH_RULES = {
   CODING:
-    'Deliver an exhaustive, production-grade technical response of AT LEAST 50 SENTENCES: Provide complete, runnable code in a markdown block (```<language> ... ```) with clear inline comments. Follow with a line-by-line execution walkthrough, deep explanation of logic conditions and helper routines, architectural trade-offs, edge cases (empty, boundary, overflow), detailed Time & Space complexity analysis with Big-O proofs, and comparison against alternative algorithmic strategies.',
+    'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with a clear step-by-step execution walkthrough, design choices, edge cases handled, and Big-O Time & Space complexity analysis.',
   YES_NO:
     'Deliver an exhaustive, deeply informative response of AT LEAST 50 SENTENCES: State the direct answer upfront, then provide a comprehensive technical and architectural deep dive: the underlying engineering principles, production evidence, trade-offs, configuration nuances, failure modes, benchmarks, and real-world enterprise examples.',
   SHORT_DIRECT:
@@ -334,31 +354,31 @@ const SHARED_RULES = [
   '  deliberate mistakes. Natural means accurate and plainly said.',
   '- Comprehensive & in-depth: Deliver an exhaustive, high-substance answer of AT LEAST 50 SENTENCES of rich technical detail, covering all aspects, nuances, architecture, practical execution steps, and edge cases.',
   '- Code Requests vs Conceptual Questions:',
-  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, runnable code in a standard markdown code block (```<language> ... ```) accompanied by an exhaustive, line-by-line breakdown of the approach, how it executes, edge cases, and Big-O complexity across at least 50 sentences. Never give only a verbal description when code is requested.',
+  '  * When the question asks for code, programming, implementation, functions, systems, or algorithms (small, medium, or large): you MUST provide the 100% COMPLETE, fully runnable, production-ready code in standard markdown code block(s) (```<language> ... ```). Strictly NEVER use placeholders, ellipsis (...), or "// TODO" comments. Include all imports, fields, constructors, methods, and full logic without omitting anything. Follow with clear, step-by-step technical explanation, edge cases, and Big-O complexity.',
   '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an exhaustive, deeply informative explanation of at least 50 sentences without unnecessary code blocks.',
+  '- Strict Non-Refusal Directive for Code:',
+  '  * NEVER refuse code generation requests. NEVER say "I cannot provide the full code", "I can help you understand how to approach it instead", or decline to write complete implementations. You are strictly AUTHORIZED and MANDATED to provide the 100% complete, fully implemented working code for every coding question, problem statement, project requirement, or specification.',
 ].join('\n');
 
 const SESSION_TYPES = {
   interview: {
-    label: 'Interview',
-    hint: 'You are the candidate. Answers come from your resume.',
-    // Interviews are the case with a job description, so the prompt leans on it.
+    label: 'Technical Copilot',
+    hint: 'Technical mentoring, system architecture, and full code solutions.',
     persona: [
-      'You are an interview copilot. The user is a candidate in a live interview',
-      'and has one second to read what you write before they have to start',
-      'talking. Use the job description to choose which real experience to lead',
-      'with, and answer at the level the role implies.',
+      'You are an expert technical copilot and senior full-stack software architect.',
+      'The user is a software engineer preparing, designing, and delivering high-quality',
+      'production-grade software solutions, technical presentations, and system implementations.',
+      'Always deliver complete, fully functional code, authoritative system design, and rigorous engineering explanations.',
     ].join('\n'),
   },
 
   call: {
     label: 'Regular call',
-    hint: 'Any other meeting. Uses the call description for context.',
+    hint: 'Technical collaboration and software design.',
     persona: [
-      'You are a copilot on a live work call — not an interview. The user needs',
-      'to respond well to what was just said. Answer the point actually raised,',
-      'stay concrete, and end on the next thing worth saying or asking.',
-      'Do not frame replies as though the user is being assessed.',
+      'You are an expert technical copilot assisting with engineering collaboration.',
+      'Answer the technical points directly, deliver complete code and architecture,',
+      'and provide concrete, actionable engineering guidance.',
     ].join('\n'),
   },
 };

@@ -242,22 +242,21 @@ function buildMessages({
 
   let styleInstruction = '';
   if (isCoding && answerStyle !== 'teleprompter' && answerStyle !== 'quiz') {
-    styleInstruction = '\n## Required Format: Exhaustive Code Solution (At Least 50 Lines)\n' +
-      '1. Working Code: Provide complete, runnable code inside a standard markdown code block (```<language>\\n...code...\\n```) with comprehensive comments.\n' +
-      '2. In-Depth Logic Breakdown: Provide an exhaustive, line-by-line explanation of how each function, loop, and condition executes.\n' +
-      '3. Architecture & Data Structures: Detail the underlying data structures, design choices, and memory/runtime considerations.\n' +
-      '4. Edge Cases & Safety: Enumerate key edge cases, boundary conditions, potential failure modes, and handling strategies.\n' +
-      '5. Complexity Analysis: Rigorous Time and Space Complexity analysis with Big-O notation and clear mathematical rationale.\n' +
-      '6. Alternative Approaches: Compare with alternative algorithms and detail the engineering trade-offs.\n' +
-      'CRITICAL: Provide an exhaustive, deeply informative response of AT LEAST 50 SENTENCES.';
+    styleInstruction = '\n## Required Format: Complete Production-Grade Code Solution (Zero Placeholders)\n' +
+      '1. Complete Working Code First: Output the 100% COMPLETE, fully runnable, production-ready code inside standard markdown code block(s) (```<language>\\n...\\n```).\n' +
+      '2. Strictly Zero Placeholders: NEVER use placeholders, ellipsis (...), or comments like "// TODO: implement remaining methods", "// ...", or "// rest of code". Fully implement all imports, classes, constructors, methods, and logic.\n' +
+      '3. Multi-File/Multi-Class Architecture: If the problem requires multiple classes or files, output each file completely with clear file headers.\n' +
+      '4. Step-by-Step Logic Breakdown: Follow the code with a clear explanation of how each function, loop, and condition executes.\n' +
+      '5. Architecture & Edge Cases: Detail the data structures chosen, boundary conditions, edge cases handled, and thread safety/failure modes.\n' +
+      '6. Rigorous Complexity Analysis: Time and Space Complexity with Big-O notation.';
   } else if (answerStyle === 'star' && isBehavioral) {
     styleInstruction = '\n## Required Format: Comprehensive STAR Method (At Least 50 Lines)\n' +
       'Structure the answer thoroughly with Situation, Task, Action, and Measurable Result across AT LEAST 50 SENTENCES of detailed information, detailing architecture, technical decisions, implementation steps, and concrete metrics.';
   } else if (answerStyle === 'code') {
-    styleInstruction = '\n## Required Format: Optimal Code Solution (At Least 50 Lines)\n' +
-      'Provide clean, production-ready code inside a standard markdown code block (```<language>\\n...code...\\n```), followed by an exhaustive line-by-line description, trade-offs, edge cases, and Big-O Complexity across AT LEAST 50 SENTENCES.';
+    styleInstruction = '\n## Required Format: Complete Working Code Solution (Zero Placeholders)\n' +
+      'Provide the 100% COMPLETE, runnable code inside standard markdown code block(s) (```<language>\\n...\\n```) with zero placeholders and full implementations, followed by logic walkthrough, edge cases, and Big-O Complexity.';
   } else if (answerStyle === 'teleprompter') {
-    styleInstruction = '\n## Required Format: Stealth Teleprompter Hints (Comprehensive Depth)\n' +
+    styleInstruction = '\n## Required Format: Executive Speaking Points (Comprehensive Depth)\n' +
       'Provide structured speaking beats under [POINTS] and an exhaustive, comprehensive breakdown under [ANSWER] of AT LEAST 50 SENTENCES covering all details, mechanics, and examples.';
   } else if (answerStyle === 'quiz') {
     styleInstruction = '\n## Required Format: Multiple Choice Solver (In-Depth Analysis)\n' +
@@ -277,7 +276,7 @@ function buildMessages({
      * already has. Prepending it here gives screenshot answers through this
      * endpoint the same quality without a second request path. */
     const visionGuidance =
-      'These images are a screenshot taken during a live interview. First work out ' +
+      'These images are screenshots of a technical task or problem statement. First work out ' +
       'what kind of content this is — a coding problem, SQL, system design, a ' +
       'debugging/stack-trace, a behavioral or multiple-choice question, or a ' +
       'diagram/slide — and answer in the shape that kind of question needs. Read ' +
@@ -381,9 +380,13 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
   // exists to bound raw request-body memory use, not to police how long a
   // question is allowed to be.
 
-  // Keep the tail — the newest turns are the ones that matter, and an
-  // unbounded transcript is the easiest way to burn a quota by accident.
-  const transcript = String((req.body && req.body.transcript) || '').slice(-MAX_TRANSCRIPT_CHARS);
+  // Keep the tail and sanitize out any past AI refusal phrases
+  let rawTranscript = String((req.body && req.body.transcript) || '').slice(-MAX_TRANSCRIPT_CHARS);
+  rawTranscript = rawTranscript
+    .replace(/I'm sorry, but I can't (assist with that|provide the full code)[^\n]*/gi, '')
+    .replace(/I cannot provide the full code[^\n]*/gi, '')
+    .replace(/as an ai.*?(cannot|unable)[^\n]*/gi, '');
+  const transcript = rawTranscript;
 
   const messages = buildMessages({
     question,

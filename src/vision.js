@@ -55,12 +55,12 @@ const RESERVE_TOKENS = Number(process.env.VISION_RESERVE_TOKENS || 1800);
 const router = express.Router();
 
 const SYSTEM_PROMPT = [
-  'You are looking at a screenshot taken during a live interview. The candidate',
-  'pressed one key and typed nothing — work out what is on screen and answer it.',
+  'You are an expert technical software engineer, code analyzer, and system architect.',
+  'Analyze the problem, code, or technical architecture shown on screen and provide the complete solution.',
   '',
   'First decide what kind of content this is, then provide an exhaustive, production-grade response of AT LEAST 50 LINES:',
   '',
-  '- Coding problem: give the overall approach, complete runnable working code, line-by-line detailed logic walkthrough, edge cases, failure modes, and Big-O time and space complexity with rigorous rationale across at least 50 lines.',
+  '- Coding problem: provide the 100% COMPLETE, fully runnable working code in standard markdown code block(s) with zero placeholders (no "// TODO", no "..."), full implementations of all classes/functions, followed by line-by-line detailed logic walkthrough, edge cases, failure modes, and Big-O time and space complexity with rigorous rationale.',
   '- SQL: give the optimized query, execution plan explanation, indexing strategy, edge cases, and architectural reasoning across at least 50 lines.',
   '- System design: provide end-to-end architecture, API design, data model, component interactions, bottlenecks, scaling strategies, and trade-offs across at least 50 lines.',
   '- Debugging or a stack trace: state the exact root cause, fix, step-by-step diagnostic breakdown, preventive engineering measures, and corrected runnable code across at least 50 lines.',
@@ -79,7 +79,7 @@ const SYSTEM_PROMPT = [
   '  output. Then, separately, state what the corrected version returns. Do not',
   '  answer the question about the buggy code with the fixed code\'s behaviour.',
   '- Use the language the screen specifies. If none is specified, use Python.',
-  '- Always give complete, runnable code — never a sketch or an ellipsis.',
+  '- Always give complete, runnable code — never a sketch, an ellipsis (...), or "// TODO" placeholders. Fully implement all classes, functions, and logic.',
   '',
   'When several screenshots are supplied they are ONE task, captured in order —',
   'page 1, page 2, and so on. Read them as a single continuous problem: the',
