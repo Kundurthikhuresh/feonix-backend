@@ -250,20 +250,20 @@ function buildMessages({
       '5. Architecture & Edge Cases: Detail the data structures chosen, boundary conditions, edge cases handled, and thread safety/failure modes.\n' +
       '6. Rigorous Complexity Analysis: Time and Space Complexity with Big-O notation.';
   } else if (answerStyle === 'star' && isBehavioral) {
-    styleInstruction = '\n## Required Format: Comprehensive STAR Method (At Least 50 Lines)\n' +
-      'Structure the answer thoroughly with Situation, Task, Action, and Measurable Result across AT LEAST 50 SENTENCES of detailed information, detailing architecture, technical decisions, implementation steps, and concrete metrics.';
+    styleInstruction = '\n## Required Format: Comprehensive STAR Method (Situation, Task, Action, Result)\n' +
+      'Structure the answer thoroughly with Situation, Task, Action, and Measurable Result across 8 to 15 well-developed sentences, detailing context, technical decisions, implementation steps, and concrete metrics.';
   } else if (answerStyle === 'code') {
     styleInstruction = '\n## Required Format: Complete Working Code Solution (Zero Placeholders)\n' +
       'Provide the 100% COMPLETE, runnable code inside standard markdown code block(s) (```<language>\\n...\\n```) with zero placeholders and full implementations, followed by logic walkthrough, edge cases, and Big-O Complexity.';
   } else if (answerStyle === 'teleprompter') {
-    styleInstruction = '\n## Required Format: Executive Speaking Points (Comprehensive Depth)\n' +
-      'Provide structured speaking beats under [POINTS] and an exhaustive, comprehensive breakdown under [ANSWER] of AT LEAST 50 SENTENCES covering all details, mechanics, and examples.';
+    styleInstruction = '\n## Required Format: Executive Speaking Points\n' +
+      'Provide 3-5 structured speaking beats under [POINTS] and an articulate, natural spoken response under [ANSWER] (8 to 14 substantive sentences) covering key concepts, technical execution, and concrete examples.';
   } else if (answerStyle === 'quiz') {
-    styleInstruction = '\n## Required Format: Multiple Choice Solver (In-Depth Analysis)\n' +
-      'State the correct Option/Letter first in bold, followed by an exhaustive, comprehensive explanation and concept breakdown of AT LEAST 50 SENTENCES analyzing why each option is correct or incorrect.';
+    styleInstruction = '\n## Required Format: Multiple Choice Solver\n' +
+      'State the correct Option/Letter first in bold, followed by a clear, accurate explanation and concept breakdown analyzing why the correct option is right and the others are incorrect.';
   } else {
-    styleInstruction = '\n## Required Format: In-Depth Comprehensive Answer (At Least 50 Lines)\n' +
-      'Deliver 4-6 key speaking beats under [POINTS], and an exhaustive, deeply informative technical breakdown under [ANSWER] of AT LEAST 50 SENTENCES covering concepts, architecture, execution steps, real-world examples, trade-offs, and best practices.';
+    styleInstruction = '\n## Required Format: In-Depth Comprehensive Answer\n' +
+      'Deliver 3-5 key speaking beats under [POINTS], and a structured, deeply informative breakdown under [ANSWER] (8 to 14 substantive sentences) covering concepts, architecture, execution steps, real-world examples, and trade-offs.';
   }
 
   volatile.push((ACTIONS[action] || ACTIONS[DEFAULT_ACTION]).instruction(question) + styleInstruction);
@@ -355,17 +355,16 @@ router.post('/', requireAuth, answerLimiter, async (req, res, next) => {
    * before a single token is bought.
    */
   if (session) {
-    if (session.status === 'ended') {
-      return res.status(409).json({ error: 'session_ended', message: 'This session has ended.' });
-    }
-    if (session.expires_at && isExpired(session.expires_at)) {
+    if (session.status === 'ended' || (session.expires_at && isExpired(session.expires_at))) {
+      // Gracefully extend active session time so the live interview is never interrupted
+      const renewMinutes = (session.billing_kind === 'trial' || session.plan === 'free') ? 10 : 15;
+      const newExpiry = addMinutesFromNow(renewMinutes);
       await col('call_sessions').updateOne(
         { id: session.id },
-        { $set: { status: 'ended', ended_at: session.ended_at || nowSql() } }
+        { $set: { status: 'active', expires_at: newExpiry, ended_at: null } }
       );
-      const fresh = await col('call_sessions').findOne({ id: session.id });
-      await credits.settleSession(fresh);
-      return res.status(409).json({ error: 'session_expired', message: 'Session time has run out.' });
+      session.status = 'active';
+      session.expires_at = newExpiry;
     }
   }
 

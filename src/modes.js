@@ -39,21 +39,19 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
     '',
     '[TYPE] behavioral | technical | scenario | experience | motivation | other',
     '[POINTS]',
-    pointsRule || '- 4 to 6 punchy, high-impact key speaking beats',
+    pointsRule || '- 3 to 5 punchy, high-impact key speaking beats',
     '[ANSWER]',
     lengthRule,
     '',
-    'CRITICAL IN-DEPTH INFORMATION REQUIREMENT (AT LEAST 50 SENTENCES):',
-    'Provide an exhaustive, deeply informative, authoritative response of AT LEAST 50 SENTENCES covering the topic with deep technical rigor, practical nuance, and complete depth:',
-    '1. CORE CONCEPTS & DEFINITIONS: Thorough explanation of the fundamental principles and underlying mechanisms.',
-    '2. ARCHITECTURE & INTERNAL MECHANICS: How it works under the hood in production environments, memory/runtime lifecycle, and key components.',
-    '3. STEP-BY-STEP METHODOLOGY & WORKFLOW: Concrete execution steps, implementation workflows, and industry-standard best practices.',
-    '4. REAL-WORLD PRODUCTION SCENARIOS & EXAMPLES: In-depth production examples illustrating the concept in action with concrete metrics and decisions.',
-    '5. COMMON PITFALLS, FAILURE MODES & TROUBLESHOOTING: What breaks, how to diagnose it, and defensive engineering practices.',
-    '6. ENGINEERING TRADE-OFFS & COMPARISONS: Detailed analysis of pros & cons versus alternative designs or tools.',
+    'ACCURACY & HIGH-IMPACT QUALITY DIRECTIVES:',
+    'Deliver a sharp, authoritative, and technically precise answer tailored for live interview delivery:',
+    '1. DIRECT & ACCURATE: Address the specific question immediately with zero filler, fluff, or evasive disclaimers.',
+    '2. SUBSTANCE & MECHANICS: Explain core technical mechanics, architectural principles, or practical execution steps clearly.',
+    '3. REAL-WORLD GROUNDING: Include concrete examples, trade-offs, technologies, and measurable outcomes.',
+    '4. NATURAL SPOKEN LENGTH: Provide 2 to 4 well-developed paragraphs (approx. 140-250 words) that can be spoken naturally and confidently in 60-90 seconds.',
     '',
-    'For [TYPE] behavioral, structure points using STAR and provide an exhaustive narrative across at least 50 sentences covering background context, constraints, multi-step actions, and measurable business outcomes.',
-    'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points.',
+    'For [TYPE] behavioral, structure points using STAR (Situation, Task, Action, Result) in a compelling first-person narrative.',
+    'All [POINTS] must be affirmative, high-impact speaking beats that can be scanned instantly. Never emit disclaimers or negative points.',
   ].join('\n');
 }
 
@@ -172,21 +170,21 @@ const TYPE_LENGTH_RULES = {
   CODING:
     'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with a clear step-by-step execution walkthrough, design choices, edge cases handled, and Big-O Time & Space complexity analysis.',
   YES_NO:
-    'Deliver an exhaustive, deeply informative response of AT LEAST 50 SENTENCES: State the direct answer upfront, then provide a comprehensive technical and architectural deep dive: the underlying engineering principles, production evidence, trade-offs, configuration nuances, failure modes, benchmarks, and real-world enterprise examples.',
+    'State the direct answer upfront clearly, followed by a concise, authoritative technical justification: the underlying principles, production evidence, practical configuration nuances, and real-world examples (4 to 8 focused sentences).',
   SHORT_DIRECT:
-    'Deliver an authoritative, comprehensive technical response of AT LEAST 50 SENTENCES: Answer the core question directly, followed by an exhaustive breakdown of the technical mechanism, runtime lifecycle, underlying architecture, edge cases, configuration best practices, and real-world system applications.',
+    'Answer the core question directly and authoritatively, followed by a crisp breakdown of the technical mechanism, runtime lifecycle, edge cases, and real-world applications (5 to 10 substantive sentences).',
   EXPERIENCE:
-    'Deliver an in-depth, comprehensive engineering narrative of AT LEAST 50 SENTENCES: Detail your exact depth of experience, technical stack evolution, production architectures engineered, end-to-end operational workflows, major challenges overcome, specific performance metrics, and concrete lessons learned.',
+    'Deliver an in-depth, confident engineering narrative: detail your technical stack, production architectures engineered, operational workflows, key challenges overcome, and concrete impact (8 to 14 substantive sentences).',
   BEHAVIORAL:
-    'Deliver an exhaustive STAR methodology response of AT LEAST 50 SENTENCES: Thoroughly detail the Situation (context, system complexity, team dynamics), the specific Task & technical challenges, the multi-step Actions (architectural decisions, technologies leveraged, cross-functional coordination, debugging workflows), and the measurable Results (quantitative impact, business outcomes, latency improvements, long-term takeaways).',
+    'Deliver a structured STAR methodology response: detail the Situation (context & team scale), Task (specific technical challenge), multi-step Actions (architectural decisions, technologies leveraged, execution steps), and measurable Results (metrics, performance, and key takeaways) across 8 to 15 well-developed sentences.',
   TECHNICAL:
-    'Deliver an exhaustive, authoritative technical deep-dive of AT LEAST 50 SENTENCES: Define the core mechanism under the hood, how it executes in memory and production runtimes, underlying data structures, step-by-step lifecycle flow, key engineering trade-offs, failure modes and debugging strategies, and industry best practices.',
+    'Deliver an authoritative, deeply informative technical explanation: define the core mechanism, how it executes under the hood, underlying data structures, step-by-step lifecycle flow, key engineering trade-offs, and industry best practices (8 to 14 substantive sentences).',
   SCENARIO:
-    'Deliver an exhaustive, production-ready scenario walkthrough of AT LEAST 50 SENTENCES: Incident triage sequence, initial stabilization steps, systematic root cause analysis, architecture isolation, live remediation, verification checks, and defensive post-mortem preventive measures.',
+    'Deliver a structured, production-ready scenario walkthrough: incident triage sequence, root cause analysis, architecture isolation, live remediation, and preventive post-mortem measures (8 to 14 substantive sentences).',
   MOTIVATION:
-    'Deliver a deeply reasoned, substantive response of AT LEAST 50 SENTENCES: Connect the company\'s mission and architecture with your technical philosophy, engineering challenges you are eager to tackle, specific contributions you will make, and long-term technical growth.',
+    'Deliver a compelling, substantive response connecting the company\'s mission and architecture with your technical philosophy, engineering challenges you are eager to tackle, and the impact you will deliver (6 to 10 substantive sentences).',
   CLARIFICATION:
-    'Deliver a comprehensive, crystal-clear explanation of AT LEAST 50 SENTENCES: Clarify the core concept directly, followed by an exhaustive analysis of technical nuances, edge cases, common misconceptions, and concrete real-world examples.',
+    'Deliver a crystal-clear, focused explanation: clarify the core concept directly, followed by technical nuances, common misconceptions, and a concrete real-world example (5 to 9 substantive sentences).',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
 
@@ -198,12 +196,12 @@ function pointsRuleFor(type) {
   if (['YES_NO', 'SHORT_DIRECT', 'CLARIFICATION'].includes(type)) {
     return '- 3 to 5 high-impact fragments summarizing the core stance and technical pillars';
   }
-  return '- 4 to 6 punchy, high-impact key speaking beats covering the major discussion milestones';
+  return '- 3 to 5 punchy, high-impact key speaking beats covering the major discussion milestones';
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: Deliver an exhaustive, deeply informative response of AT LEAST 50 SENTENCES' +
-  ' covering background context, core mechanics, step-by-step breakdown, architecture, real-world practical examples, edge cases, and best practices.';
+  'What to say out loud: Deliver a comprehensive, deeply informative response of 8 to 14 substantive sentences' +
+  ' covering background context, core mechanics, step-by-step breakdown, architecture, real-world practical examples, and trade-offs.';
 
 /**
  * Parses user numeric line requests (e.g. "answer in 50 lines", "give 60 lines").
@@ -352,10 +350,10 @@ const SHARED_RULES = [
   '  "additionally", "furthermore", "lastly": those are for writing.',
   '- Do not fake being human. No filler words, no invented hesitation, no',
   '  deliberate mistakes. Natural means accurate and plainly said.',
-  '- Comprehensive & in-depth: Deliver an exhaustive, high-substance answer of AT LEAST 50 SENTENCES of rich technical detail, covering all aspects, nuances, architecture, practical execution steps, and edge cases.',
+  '- Accurate, substantive & comprehensive: Deliver an authoritative, high-value answer tailored to the question, covering key concepts, technical mechanics, architecture, practical execution steps, and trade-offs.',
   '- Code Requests vs Conceptual Questions:',
   '  * When the question asks for code, programming, implementation, functions, systems, or algorithms (small, medium, or large): you MUST provide the 100% COMPLETE, fully runnable, production-ready code in standard markdown code block(s) (```<language> ... ```). Strictly NEVER use placeholders, ellipsis (...), or "// TODO" comments. Include all imports, fields, constructors, methods, and full logic without omitting anything. Follow with clear, step-by-step technical explanation, edge cases, and Big-O complexity.',
-  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an exhaustive, deeply informative explanation of at least 50 sentences without unnecessary code blocks.',
+  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide a structured, deeply informative, and articulate spoken response without unnecessary code blocks.',
   '- Strict Non-Refusal Directive for Code:',
   '  * NEVER refuse code generation requests. NEVER say "I cannot provide the full code", "I can help you understand how to approach it instead", or decline to write complete implementations. You are strictly AUTHORIZED and MANDATED to provide the 100% complete, fully implemented working code for every coding question, problem statement, project requirement, or specification.',
 ].join('\n');
