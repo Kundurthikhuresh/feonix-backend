@@ -1,27 +1,19 @@
 /**
  * Razorpay Payments Integration
- * - POST /api/razorpay/create-order     — mint a one-time Order for a plan
- * - POST /api/razorpay/verify-payment   — verify the Checkout.js callback and grant credits
+ * - POST /api/razorpay/create-order     — mint a one-time Order for a plan (with optional coupon)
+ * - POST /api/razorpay/verify-payment   — verify the Checkout.js callback and grant credits / bonus
+ * - POST /api/razorpay/pay-upi          — direct UPI ID / VPA payment flow
  * - POST /api/razorpay/webhook          — reliability backstop (raw body — must be registered BEFORE express.json())
  * - GET  /api/razorpay/subscription     — current plan/credits state
- *
- * This app's actual model is "buy a batch of credits, use them until they
- * run out, buy more" (see credits.js and the free-trial flow), not metered
- * recurring billing — so this uses Razorpay's one-time Orders + Checkout.js
- * flow rather than its separate Subscriptions API (which needs Plans
- * pre-created in the Razorpay dashboard and a recurring-mandate auth flow).
- * A user who wants more credits next month just clicks "Upgrade" again.
- *
- * IMPORTANT: Plan → amount mapping is server-side only. The frontend only
- * ever sends a plan id; it never sees or sets an amount.
  */
 const crypto = require('crypto');
 const express = require('express');
-const { col, nowSql } = require('./db');
+const { col, nextId, nowSql } = require('./db');
 const { requireAuth } = require('./auth');
 const { createNotification } = require('./notifications');
 const { sendSubscriptionEmail } = require('./mailer');
 const credits = require('./credits');
+const { evaluatePromotion } = require('./promotions');
 
 const router = express.Router();
 
@@ -29,7 +21,6 @@ function getRazorpay() {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   if (!keyId || !keySecret) return null;
-  // Lazy-require so the server starts even without Razorpay configured.
   const Razorpay = require('razorpay');
   return new Razorpay({ key_id: keyId, key_secret: keySecret });
 }
@@ -96,7 +87,7 @@ const PLAN_CONFIG = {
   },
 };
 
-async function grantPlanCredits(user, plan, paymentId) {
+async function grantPlanCredits(user, plan, paymentId, couponInfo = null) {
   const config = PLAN_CONFIG[plan];
   if (!user || !config) return;
 
@@ -116,20 +107,59 @@ async function grantPlanCredits(user, plan, paymentId) {
     { $set: setObj }
   );
 
-  // The payment id goes straight into the reason at grant time — this is
-  // also what the idempotency check below (`already`) matches against, so
-  // a duplicate verify-payment call or the webhook backstop firing for the
-  // same payment can never grant credits twice.
+  // Grant base plan credits if any
   if (config.credits > 0) {
-    await credits.grantCredits(user.id, config.credits, { reason: `Razorpay ${config.name || plan.toUpperCase()} (${paymentId})` });
+    await credits.grantCredits(user.id, config.credits, {
+      reason: `Razorpay ${config.name || plan.toUpperCase()} (${paymentId})`,
+    });
   }
 
+  // Handle applied promotion atomically & idempotently
+  let bonusCreditsAwarded = 0;
+  if (couponInfo && couponInfo.coupon_code) {
+    const cleanCouponCode = String(couponInfo.coupon_code).trim().toUpperCase();
+    const alreadyRedeemed = await col('promotion_redemptions').findOne({ payment_id: paymentId });
+    if (!alreadyRedeemed) {
+      await col('promotions').updateOne(
+        { code: cleanCouponCode },
+        { $inc: { redemption_count: 1 }, $set: { updated_at: nowSql() } }
+      );
+
+      const redemptionId = await nextId('promotion_redemptions');
+      await col('promotion_redemptions').insertOne({
+        id: redemptionId,
+        promotion_id: couponInfo.promotion_id || null,
+        promotion_code: cleanCouponCode,
+        user_id: user.id,
+        user_email: user.email,
+        order_id: couponInfo.order_id || null,
+        payment_id: paymentId,
+        plan,
+        original_amount: Number(couponInfo.original_amount) || (config.amountPaise / 100),
+        discount_amount: Number(couponInfo.discount_amount) || 0,
+        final_amount: Number(couponInfo.final_amount) || (config.amountPaise / 100),
+        bonus_credits: Number(couponInfo.bonus_credits) || 0,
+        redeemed_at: nowSql(),
+      });
+
+      if (couponInfo.bonus_credits > 0) {
+        bonusCreditsAwarded = Number(couponInfo.bonus_credits);
+        await credits.grantCredits(user.id, bonusCreditsAwarded, {
+          reason: `Promotion Bonus: ${cleanCouponCode} (${paymentId})`,
+          adminId: null,
+          is_promotional: true,
+        });
+      }
+    }
+  }
+
+  const totalCreditsAdded = (config.credits || 0) + bonusCreditsAwarded;
   await createNotification(user.id, {
     type: 'payment_success',
     title: 'Payment Completed & Plan Activated! 🎉',
     message: config.unlimited
-      ? `Your ${config.name || plan} subscription is now active with unlimited sessions!`
-      : `Your payment was successful! +${config.credits} credits have been added to your account.`,
+      ? `Your ${config.name || plan} subscription is now active with unlimited sessions!${couponInfo?.coupon_code ? ` (Coupon ${couponInfo.coupon_code.toUpperCase()} applied)` : ''}`
+      : `Your payment was successful! +${totalCreditsAdded} credits have been added to your account${bonusCreditsAwarded > 0 ? ` (includes +${bonusCreditsAwarded} promo bonus credits!)` : ''}.`,
   });
 
   sendSubscriptionEmail(user.email, plan).catch(console.error);
@@ -146,20 +176,66 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
       });
     }
 
-    const { plan } = req.body || {};
+    const { plan, coupon_code } = req.body || {};
     const config = PLAN_CONFIG[plan];
     if (!config) {
       return res.status(400).json({ error: 'invalid_plan', message: 'Invalid plan selected.' });
     }
 
+    let payableAmountPaise = config.amountPaise;
+    let promoEval = null;
+
+    if (coupon_code) {
+      promoEval = await evaluatePromotion(coupon_code, {
+        userId: req.user.id,
+        userEmail: req.user.email,
+        plan,
+        amountPaise: config.amountPaise,
+      });
+
+      if (!promoEval.valid) {
+        return res.status(400).json({
+          error: promoEval.error,
+          message: promoEval.message,
+        });
+      }
+
+      payableAmountPaise = promoEval.final_amount_paise;
+    }
+
+    const orderNotes = {
+      userId: String(req.user.id),
+      plan,
+    };
+
+    if (promoEval) {
+      orderNotes.couponCode = promoEval.promotion.code;
+      orderNotes.discountPaise = String(promoEval.discount_amount_paise);
+      orderNotes.bonusCredits = String(promoEval.bonus_credits);
+      orderNotes.promotionId = String(promoEval.promotion.id);
+    }
+
     const order = await razorpay.orders.create({
-      amount: config.amountPaise,
+      amount: payableAmountPaise,
       currency: 'INR',
-      // Razorpay caps receipt at 40 chars — plan + user id + a short random
-      // suffix keeps this unique per attempt without needing to look
-      // anything up first.
-      receipt: `${plan}_${req.user.id}_${Date.now().toString(36)}`,
-      notes: { userId: String(req.user.id), plan },
+      receipt: `${plan}_${req.user.id}_${Date.now().toString(36)}`.slice(0, 40),
+      notes: orderNotes,
+    });
+
+    // Track pending order for verification matching
+    await col('pending_orders').insertOne({
+      order_id: order.id,
+      user_id: req.user.id,
+      user_email: req.user.email,
+      plan,
+      original_amount_paise: config.amountPaise,
+      final_amount_paise: payableAmountPaise,
+      coupon_code: promoEval ? promoEval.promotion.code : null,
+      promotion_id: promoEval ? promoEval.promotion.id : null,
+      discount_amount: promoEval ? promoEval.discount_amount : 0,
+      bonus_credits: promoEval ? promoEval.bonus_credits : 0,
+      status: 'created',
+      created_at: nowSql(),
     });
 
     return res.json({
@@ -168,14 +244,20 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
       currency: order.currency,
       key_id: process.env.RAZORPAY_KEY_ID,
       plan,
+      applied_coupon: promoEval ? {
+        code: promoEval.promotion.code,
+        name: promoEval.promotion.name,
+        discount_amount: promoEval.discount_amount,
+        bonus_credits: promoEval.bonus_credits,
+        final_amount: promoEval.final_amount,
+      } : null,
     });
   } catch (err) {
     return next(err);
   }
 });
 
-// POST /api/razorpay/verify-payment — called by the frontend once
-// Checkout.js's handler fires with a successful payment.
+// POST /api/razorpay/verify-payment
 router.post('/verify-payment', requireAuth, async (req, res, next) => {
   try {
     const razorpay = getRazorpay();
@@ -188,16 +270,13 @@ router.post('/verify-payment', requireAuth, async (req, res, next) => {
       razorpay_payment_id: paymentId,
       razorpay_signature: signature,
       plan,
+      coupon_code,
     } = req.body || {};
 
     if (!orderId || !paymentId || !signature || !PLAN_CONFIG[plan]) {
       return res.status(400).json({ error: 'invalid_request', message: 'Missing or invalid payment details.' });
     }
 
-    // The one check that actually matters: this HMAC can only have been
-    // produced by someone holding RAZORPAY_KEY_SECRET, so a verified
-    // signature is proof the payment is real and for this exact order —
-    // everything else in the request body is client-supplied and untrusted.
     const expectedSignature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
       .update(`${orderId}|${paymentId}`)
@@ -207,20 +286,35 @@ router.post('/verify-payment', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'signature_mismatch', message: 'Payment verification failed.' });
     }
 
-    // Idempotent: a retried/duplicated verify call (or the webhook backstop
-    // below firing for the same payment) must not grant credits twice.
     const already = await col('credit_transactions').findOne({ reason: { $regex: paymentId } });
     if (already) {
       return res.json({ success: true, already_processed: true, plan });
     }
 
     const user = await col('users').findOne({ id: req.user.id });
-    await grantPlanCredits(user, plan, paymentId);
+    const pendingOrder = await col('pending_orders').findOne({ order_id: orderId });
+    const usedCode = pendingOrder?.coupon_code || coupon_code || null;
+
+    let couponInfo = null;
+    if (usedCode) {
+      couponInfo = {
+        coupon_code: usedCode,
+        promotion_id: pendingOrder?.promotion_id || null,
+        original_amount: pendingOrder ? (pendingOrder.original_amount_paise / 100) : (PLAN_CONFIG[plan].amountPaise / 100),
+        discount_amount: pendingOrder?.discount_amount || 0,
+        final_amount: pendingOrder ? (pendingOrder.final_amount_paise / 100) : (PLAN_CONFIG[plan].amountPaise / 100),
+        bonus_credits: pendingOrder?.bonus_credits || 0,
+        order_id: orderId,
+      };
+    }
+
+    await grantPlanCredits(user, plan, paymentId, couponInfo);
 
     return res.json({
       success: true,
-      message: `Payment completed. ${plan.toUpperCase()} plan activated with +${PLAN_CONFIG[plan].credits} credits.`,
+      message: `Payment completed. ${plan.toUpperCase()} plan activated${couponInfo?.bonus_credits ? ` with +${couponInfo.bonus_credits} bonus credits` : ''}.`,
       plan,
+      applied_coupon: couponInfo,
     });
   } catch (err) {
     return next(err);
@@ -230,7 +324,7 @@ router.post('/verify-payment', requireAuth, async (req, res, next) => {
 // POST /api/razorpay/pay-upi — direct UPI ID / VPA payment flow
 router.post('/pay-upi', requireAuth, async (req, res, next) => {
   try {
-    const { plan, upiId } = req.body || {};
+    const { plan, upiId, coupon_code } = req.body || {};
     const config = PLAN_CONFIG[plan];
     if (!config) {
       return res.status(400).json({ error: 'invalid_plan', message: 'Invalid plan selected.' });
@@ -239,16 +333,43 @@ router.post('/pay-upi', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'invalid_upi', message: 'Please enter a valid UPI ID (e.g. yourname@okhdfcbank).' });
     }
 
+    let couponInfo = null;
+    if (coupon_code) {
+      const promoEval = await evaluatePromotion(coupon_code, {
+        userId: req.user.id,
+        userEmail: req.user.email,
+        plan,
+        amountPaise: config.amountPaise,
+      });
+
+      if (!promoEval.valid) {
+        return res.status(400).json({
+          error: promoEval.error,
+          message: promoEval.message,
+        });
+      }
+
+      couponInfo = {
+        coupon_code: promoEval.promotion.code,
+        promotion_id: promoEval.promotion.id,
+        original_amount: promoEval.original_amount,
+        discount_amount: promoEval.discount_amount,
+        final_amount: promoEval.final_amount,
+        bonus_credits: promoEval.bonus_credits,
+      };
+    }
+
     const user = await col('users').findOne({ id: req.user.id });
     const paymentId = `pay_upi_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
-    await grantPlanCredits(user, plan, paymentId);
+    await grantPlanCredits(user, plan, paymentId, couponInfo);
 
     return res.json({
       success: true,
-      message: `UPI Payment completed for ${upiId}! ${config.name || plan.toUpperCase()} activated.`,
+      message: `UPI Payment completed for ${upiId}! ${config.name || plan.toUpperCase()} activated${couponInfo?.bonus_credits ? ` with +${couponInfo.bonus_credits} bonus credits` : ''}.`,
       paymentId,
       plan,
+      applied_coupon: couponInfo,
     });
   } catch (err) {
     return next(err);
@@ -274,9 +395,7 @@ router.get('/subscription', requireAuth, async (req, res, next) => {
   }
 });
 
-// POST /api/razorpay/webhook — reliability backstop in case the browser
-// closes/loses connection before verify-payment's client-side call fires.
-// MUST use raw body (registered in server.js before express.json()).
+// POST /api/razorpay/webhook
 router.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
@@ -313,17 +432,28 @@ router.post(
           const already = await col('credit_transactions').findOne({ reason: { $regex: payment.id } });
           if (!already) {
             const user = await col('users').findOne({ id: userId });
-            if (user) await grantPlanCredits(user, plan, payment.id);
+            if (user) {
+              const couponCode = notes.couponCode;
+              const couponInfo = couponCode ? {
+                coupon_code: couponCode,
+                promotion_id: notes.promotionId ? Number(notes.promotionId) : null,
+                bonus_credits: notes.bonusCredits ? Number(notes.bonusCredits) : 0,
+                discount_amount: notes.discountPaise ? (Number(notes.discountPaise) / 100) : 0,
+                order_id: payment.order_id || null,
+              } : null;
+              await grantPlanCredits(user, plan, payment.id, couponInfo);
+            }
           }
         }
       }
     } catch (err) {
       console.error('Razorpay webhook handler error:', err);
-      // Still return 200 so Razorpay doesn't retry indefinitely.
     }
 
     return res.json({ received: true });
   }
 );
 
+router.PLAN_CONFIG = PLAN_CONFIG;
 module.exports = router;
+module.exports.PLAN_CONFIG = PLAN_CONFIG;

@@ -21,6 +21,10 @@ if (process.platform === 'win32') {
     const opts = typeof options === 'object' && options ? options : {};
     const family = opts.family;
 
+    if (!hostname || hostname === 'localhost' || require('net').isIP(hostname)) {
+      return osLookup(hostname, options, callback);
+    }
+
     const resolveVia = family === 6 ? dns.resolve6 : dns.resolve4;
     resolveVia(hostname, (err, addresses) => {
       if (err || !addresses || !addresses.length) {
@@ -106,12 +110,14 @@ class MemoryCollection {
   _matches(item, query) {
     if (!query || Object.keys(query).length === 0) return true;
     for (const key of Object.keys(query)) {
-      if (key === '_id' || key === 'id' || key === 'sid' || key === 'email' || key === 'user_id') {
-        if (item[key] !== query[key]) return false;
-      } else if (typeof query[key] === 'object' && query[key] !== null) {
+      if (typeof query[key] === 'object' && query[key] !== null) {
         if (query[key].$in !== undefined && Array.isArray(query[key].$in)) {
-          if (!query[key].$in.includes(item[key])) return false;
+          if (!query[key].$in.map(String).includes(String(item[key]))) return false;
         }
+        if (query[key].$nin !== undefined && Array.isArray(query[key].$nin)) {
+          if (query[key].$nin.map(String).includes(String(item[key]))) return false;
+        }
+        if (query[key].$ne !== undefined && item[key] === query[key].$ne) return false;
         if (query[key].$gte !== undefined && !(item[key] >= query[key].$gte)) return false;
         if (query[key].$lte !== undefined && !(item[key] <= query[key].$lte)) return false;
         if (query[key].$gt !== undefined && !(item[key] > query[key].$gt)) return false;
@@ -215,9 +221,57 @@ class MemoryCollection {
   }
 
   aggregate(pipeline = []) {
+    let current = [...this.items];
+    for (const stage of pipeline) {
+      if (stage.$match) {
+        current = current.filter((item) => this._matches(item, stage.$match));
+      } else if (stage.$group) {
+        const groups = {};
+        const groupSpec = stage.$group;
+        const idKey = typeof groupSpec._id === 'string' && groupSpec._id.startsWith('$')
+          ? groupSpec._id.slice(1)
+          : groupSpec._id;
+
+        for (const item of current) {
+          const groupId = groupSpec._id === null ? '__single__' : String(item[idKey] ?? '');
+          if (!groups[groupId]) {
+            groups[groupId] = { _id: groupSpec._id === null ? null : (item[idKey] ?? null) };
+            for (const [k, v] of Object.entries(groupSpec)) {
+              if (k !== '_id') groups[groupId][k] = (v && v.$max) ? null : 0;
+            }
+          }
+          for (const [k, v] of Object.entries(groupSpec)) {
+            if (k === '_id') continue;
+            if (v && v.$max !== undefined) {
+              const maxKey = typeof v.$max === 'string' && v.$max.startsWith('$') ? v.$max.slice(1) : v.$max;
+              const curVal = item[maxKey];
+              if (curVal !== undefined && (groups[groupId][k] === null || curVal > groups[groupId][k])) {
+                groups[groupId][k] = curVal;
+              }
+            } else if (v && v.$sum !== undefined) {
+              let val = 0;
+              if (typeof v.$sum === 'number') {
+                val = v.$sum;
+              } else if (typeof v.$sum === 'string' && v.$sum.startsWith('$')) {
+                val = Number(item[v.$sum.slice(1)]) || 0;
+              } else if (typeof v.$sum === 'object' && v.$sum !== null) {
+                if (v.$sum.$abs) {
+                  const subKey = String(v.$sum.$abs).replace(/^\$/, '');
+                  val = Math.abs(Number(item[subKey]) || 0);
+                } else if (v.$sum.$add && Array.isArray(v.$sum.$add)) {
+                  val = v.$sum.$add.reduce((s, p) => s + (Number(item[String(p).replace(/^\$/, '')]) || 0), 0);
+                }
+              }
+              groups[groupId][k] += val;
+            }
+          }
+        }
+        current = Object.values(groups);
+      }
+    }
     return {
       async toArray() {
-        return [{ total: 0 }];
+        return current;
       },
     };
   }
@@ -254,7 +308,8 @@ async function connect() {
         });
         await client.connect();
         db = client.db(process.env.MONGODB_DB || 'feonixai');
-        await ensureIndexes();
+        // ~46 sequential Atlas round trips (~9s); awaiting it blocked every request after a restart.
+        ensureIndexes().catch((err) => console.warn('ensureIndexes failed:', err.message));
         console.log('Successfully connected to MongoDB Atlas.');
         return db;
       } catch (err) {
@@ -342,12 +397,20 @@ async function nextId(name) {
   return doc.seq;
 }
 
+const tokenUsageCache = new Map();
 async function tokensUsedThisMonth(userId) {
+  if (!userId) return 0;
+  const cached = tokenUsageCache.get(userId);
+  if (cached && (Date.now() - cached.time) < 25000) {
+    return cached.total;
+  }
   const rows = await col('usage').aggregate([
     { $match: { user_id: userId, created_at: { $gte: startOfMonthSql() } } },
     { $group: { _id: null, total: { $sum: { $add: ['$prompt_tokens', '$output_tokens'] } } } },
   ]).toArray();
-  return rows[0] ? rows[0].total : 0;
+  const total = rows[0] ? rows[0].total : 0;
+  tokenUsageCache.set(userId, { total, time: Date.now() });
+  return total;
 }
 
 async function recordUsage(userId, model, promptTokens, outputTokens) {
@@ -383,6 +446,7 @@ async function settleUsage(usageId, promptTokens, outputTokens) {
     { id: usageId },
     { $set: { prompt_tokens: promptTokens || 0, output_tokens: outputTokens || 0 } }
   );
+  tokenUsageCache.clear();
 }
 
 async function loadDocContent(userId, kind, maxChars) {

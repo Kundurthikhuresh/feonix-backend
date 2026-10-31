@@ -19,6 +19,13 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
+  if (process.env.NODE_ENV === 'test' || process.env.DISABLE_MAILER === 'true') {
+    transporter = {
+      sendMail: async () => ({ messageId: 'mock-test-id' }),
+    };
+    return transporter;
+  }
+
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
   const user = process.env.SMTP_USER;

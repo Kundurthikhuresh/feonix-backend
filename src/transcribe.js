@@ -12,7 +12,7 @@
 const express = require('express');
 const { toFile } = require('openai');
 const { tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
-const { requireAuth } = require('./auth');
+const { requireAuthLive } = require('./auth');
 const { openai } = require('./openai-client');
 const quota = require('./quota');
 const { technicalTerms } = require('./modes');
@@ -36,40 +36,42 @@ const LANGUAGE_CODES = {
 
 const ALLOWED_EXTENSIONS = ['webm', 'ogg', 'mp3', 'mp4', 'm4a', 'wav', 'mpga', 'mpeg'];
 
-// Nudges the model toward interview vocabulary and away from hallucinating
-// filler into silence.
-const TRANSCRIBE_PROMPT =
-  'This is audio from a job interview. Transcribe the questions accurately.';
+// Concise prompt primes Whisper for technical software dialogue without the heavy
+// 50-word vocabulary burden that caused 5+ second latency and YouTube outro hallucinations.
+// Kept to this one line: a longer hint (language, accent, "interview") was
+// borrowed word for word into invented sentences on near-silent clips. The
+// wrong-script problem is handled by the whisper-1 retry instead.
+const CORE_TECH_VOCABULARY = 'Technical software engineering interview dialogue.';
 
-/**
- * Whisper's `prompt` biases decoding toward the vocabulary it contains. A fixed
- * generic sentence gives it nothing to go on, so role-specific terms come back
- * as whatever ordinary English sounds closest — "EPMS" as "EPM as", "SCADA" as
- * "scatter" — and a strong accent makes that worse, because the model leans
- * harder on its language prior exactly when the acoustics are ambiguous.
- *
- * Feeding it the words this call is actually about is the cheapest accuracy win
- * available: the company, the role, and the unusual terms already written into
- * the session's job description and instructions.
- *
- * Deliberately capped and comma-separated. It stays well inside Whisper's
- * 224-token prompt limit, and a bare term list gives stripPromptEcho() no
- * sentence to mistake for real speech.
- */
-const VOCAB_LIMIT = 40;
+const TRANSCRIBE_PROMPT = CORE_TECH_VOCABULARY;
+
+const VOCAB_LIMIT = 5;
 
 function vocabularyFrom(session) {
   if (!session) return '';
   const source = [session.company, session.role, session.job_description, session.context]
     .filter(Boolean).join(' ');
-  // Same extractor the answer prompt grounds against, so the words Whisper is
-  // primed to hear and the words the answer is checked against stay identical.
   return technicalTerms(source, VOCAB_LIMIT).join(', ');
 }
 
 function promptFor(session) {
   const vocab = vocabularyFrom(session);
-  return vocab ? `${TRANSCRIBE_PROMPT} Terms used: ${vocab}.` : TRANSCRIBE_PROMPT;
+  return vocab ? `${CORE_TECH_VOCABULARY} Topics: ${vocab}.` : `${CORE_TECH_VOCABULARY}.`;
+}
+
+function repairTechnicalAcoustics(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/\b(object|class|interface|inheritance|polymorphism|encapsulation|abstraction|methods?|constructors?|packages?|variables?|arrays?|strings?|pointers?|threads?|garbage collection|generics?)\s+in\s+(a\s+)?job\s+inter?views?\b/gi, '$1 in Java')
+    .replace(/\b(in|with|using)\s+job\s+inter?views?\s+(programming|language|code|oop|framework|application)\b/gi, '$1 Java $2')
+    .replace(/\bwhat\s+is\s+(an?\s+)?object\s+in\s+job\s+inter?views?\b/gi, 'what is an object in Java')
+    .replace(/\bhow\s+to\s+use\s+(an?\s+)?object\s+in\s+job\s+inter?views?\b/gi, 'how to use an object in Java')
+    .replace(/\b(in|for)\s+job\s+interview\s+(class|object|interface)\b/gi, '$1 Java $2')
+    .replace(/\b(c\s+sharp|see\s+sharp)\b/gi, 'C#')
+    .replace(/\b(c\s+plus\s+plus|see\s+plus\s+plus)\b/gi, 'C++')
+    .replace(/\b(node\s+j\s*s|node\s+js)\b/gi, 'Node.js')
+    .replace(/\b(react\s+j\s*s|react\s+js)\b/gi, 'React')
+    .replace(/\bjason\s+(object|payload|response|data|format|string)\b/gi, 'JSON $1');
 }
 
 /**
@@ -86,12 +88,6 @@ const words = (t) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).f
 /**
  * Word sets for the prompt that was actually sent.
  *
- * These used to be module constants built from TRANSCRIBE_PROMPT alone, while
- * the request sent promptFor(session) — the base prompt PLUS a "Terms used:"
- * vocabulary line. So when Whisper echoed its prompt back (which it does on a
- * chunk it cannot decode) the vocabulary sentence was not recognised as echo
- * and landed in the transcript as though the interviewer had said it.
- *
  * Derived per prompt instead, and memoised because the prompt only changes
  * when the session does.
  */
@@ -106,38 +102,21 @@ function promptWordsets(prompt) {
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean)
       .map((x) => new Set(words(x)));
-    // Bounded: one entry per distinct session prompt, not per request.
     if (wordsetCache.size > 50) wordsetCache.clear();
     wordsetCache.set(key, sets);
   }
   return sets;
 }
 
-/**
- * Fuzzy, not exact. The model paraphrases its own prompt when it echoes it —
- * observed live: "This is the audio from a job interview." against a prompt of
- * "This is audio from a job interview." A substring test misses that single
- * inserted word, the echo reaches the transcript as a question, and the model
- * then answers it ("I think there might be a misunderstanding..."). Compare by
- * word overlap instead.
- */
 function isPromptEcho(sentence, wordsets) {
   const w = words(sentence);
-  // words() only keeps [a-z0-9] — a sentence in Telugu, Korean, Arabic, or
-  // any other non-Latin script this app's own session-language list
-  // supports reduces to zero words here every time, regardless of content.
-  // That used to be read as "the prompt-echo check found nothing to compare,
-  // so treat it as echo" — which silently dropped every real question asked
-  // in a non-Latin-script language, every chunk, for the whole session. The
-  // prompt is plain English; a sentence with no Latin words in it cannot be
-  // an echo of it. Only genuine silence (nothing left after trimming at all)
-  // still counts as echo/filler here.
   if (!w.length) return !sentence.trim();
+  // One to three words, all taken from the hint ("dialogue..", "interview
+  // dialogue"): a fragment of the hint, not speech.
+  if (w.length <= 3 && w.every((x) => wordsets.some((set) => set.has(x)))) return true;
   return wordsets.some((set) => {
     const shared = w.filter((x) => set.has(x)).length;
-    // Most of the sentence is prompt vocabulary, and it covers most of a
-    // prompt sentence — i.e. it is that sentence, however reworded.
-    return shared / w.length >= 0.8 && shared / set.size >= 0.7;
+    return shared / w.length >= 0.88 && shared / set.size >= 0.8;
   });
 }
 
@@ -153,6 +132,13 @@ const HALLUCINATIONS = [
   'silence', '[silence]', '[music]', '[applause]', 'music playing',
   'transcription by', 'amara.org', 'cuáles son', 'cuales son',
   'muchas gracias por ver', 'hangi zarzı', 'hangi zarzi',
+  'useless', 'go download them all', "i'm out", "i don't know", "that's all",
+  'thank you so much', 'have a great day', 'have a good day', 'have a nice day',
+  'have a wonderful day', 'have a pleasant day', 'good day', 'good bye', 'goodbye',
+  'if you liked this video', 'if you enjoyed this video', 'i have more videos',
+  'more videos', 'check out my channel', 'see you next time', 'see you later',
+  'see you soon', 'have a good one', 'have a nice one',
+  'good night', 'goodnight', 'good night everyone',
 ];
 
 const HALLUCINATION_REGEXES = [
@@ -165,11 +151,38 @@ const HALLUCINATION_REGEXES = [
   /https?:\/\//i,
   /www\./i,
   /\bopenai\b/i,
+  // gpt-4o-mini-transcribe echoes its prompt with extra words ("Context: ###
+  // Technical software engineering interview dialogue. This...") that the
+  // word-overlap echo check misses.
+  /technical\s+software\s+engineering\s+interview\s+dialogue/i,
+  /^context\s*:\s*#/i,
+  // On near-silent clips gpt-4o-mini-transcribe writes chatbot lines, often
+  // borrowing words from its hint ("Hello, I am ChatGPT, your AI assistant",
+  // "I am here for the technical software engineering interview"). Nobody in
+  // a real interview says these, and each was being answered as a question.
+  /\bchat\s*gpt\b/i,
+  /\b(your|an?)\s+ai\s+assistant\b/i,
+  /\bhow\s+(can|may)\s+i\s+(help|assist)\s+you\b/i,
+  /\btechnical\s+software\s+engineering\s+interview\b/i,
+  /\bindian[-\s]accented\b/i,
+  /\bwritten\s+in\s+english\s+letters\b/i,
+  // Stock video narration the model invents over background noise.
+  /\bshare\s+(the|this)\s+video\b/i,
+  /\b(the|this)\s+video\s+is\s+(limited|about|sponsored)\b/i,
+  /\bsocial\s+networks?\b.*\bvideo\b|\bvideo\b.*\bsocial\s+networks?\b/i,
+  /\b(door|doors)\s+(opening|closing)\b.*\b(opening|closing)\b/i,
+  /^\s*(vocabulary|dialogue)[.\s]*$/i,
   /thank(s|\s+you)\s+for\s+(watching|listening)/i,
   /like\s+and\s+subscribe/i,
   /subscribe\s+to\s+(my\s+)?channel/i,
-  /see\s+you\s+(in\s+the\s+next|next\s+time)/i,
+  /see\s+you\s+(in\s+the\s+next|next\s+time|later|soon)/i,
   /bye\s*bye/i,
+  /\bhave\s+a\s+(good|great|nice|wonderful|pleasant)\s+(day|weekend|evening|night|one)\b/i,
+  /\bif\s+you\s+(liked|enjoyed)\s+this\s+video\b/i,
+  /\bi\s+have\s+more\s+videos\b/i,
+  /\bplease\s+subscribe\b/i,
+  /\b(leave\s+a\s+comment|smash\s+the\s+like|don't\s+forget\s+to\s+subscribe)\b/i,
+  /^(useless|go download them all|i'm out|i don't know|that's all|thank you so much|have a great day|have a good day|have a nice day|have a good one)[\.\?!]?$/i,
   /^\[.*\]$/,
   /^\(.*\)$/,
   /[♪♫]/,
@@ -178,6 +191,29 @@ const HALLUCINATION_REGEXES = [
 const CJK_REGEX = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\uac00-\ud7af]/;
 const CYRILLIC_REGEX = /[\u0400-\u04ff]/;
 const ARABIC_REGEX = /[\u0600-\u06ff]/;
+// Arabic/Urdu, Devanagari, Telugu, Tamil, Cyrillic or CJK letters in what
+// should be English: the words were written in the wrong script.
+const NON_LATIN_SCRIPT_REGEX = /[\u0600-\u06ff\u0750-\u077f\u0900-\u097f\u0c00-\u0c7f\u0b80-\u0bff\u0400-\u04ff\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/;
+const FALLBACK_MODEL = 'whisper-1';
+const CLIP_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS || 4000);
+const TINY_CLIP_BYTES = 8000;
+const RETRY_EMPTY_MIN_BYTES = 20000;
+const GREETING_START = /^(hello|hi|hey|good\s+(morning|afternoon|evening|night))\b/i;
+// Spanish/Portuguese/French letters. gpt-4o-mini-transcribe sometimes switches
+// an accented English question into Spanish ("functional decentralization"
+// came back as "descentralización funcional"), which the Latin-only script
+// check above cannot see. Two or more such letters, outside the few accented
+// words English speakers use, means the clip is redone in English.
+const FOREIGN_LATIN_REGEX = /[ñáíóúüàèìòùâêîôûãõçœ¿¡]/gi;
+const ENGLISH_ACCENTED_WORDS = /\b(r[ée]sum[ée]s?|caf[ée]s?|na[ïi]ve|clich[ée]|fa[çc]ade|d[ée]j[àa]|pi[ñn]ata|jalape[ñn]o)\b/gi;
+function looksForeignLatin(text) {
+  const plain = String(text || '').replace(ENGLISH_ACCENTED_WORDS, '');
+  const hits = plain.match(FOREIGN_LATIN_REGEX);
+  return /[¿¡ñäöß]/i.test(plain)
+    || (hits ? hits.length : 0) >= 2
+    || /[a-z](ción|ciones|ção|ções|sión|siones)\b/i.test(plain)
+    || /(^|\s)(qué|cómo|cuál|cuáles|está|también|después|más|así)(?=[\s.,?!]|$)/i.test(plain);
+}
 
 const MULTILINGUAL_HALLUCINATIONS = [
   '他に何かご質問はありますか', 'ご視聴ありがとうございました', 'チャンネル登録',
@@ -247,44 +283,103 @@ function stripPromptEcho(text, prompt, sessionLang = 'en') {
   return cleaned.length < 2 ? '' : cleaned;
 }
 
-async function transcribeAudio(buffer, filename, contentType, session) {
+async function transcribeAudio(buffer, filename, contentType, session, customKey) {
   const file = await toFile(buffer, filename, { type: contentType || 'audio/webm' });
   const promptUsed = promptFor(session);
   const sessionLang = String((session && session.language) || '').toLowerCase();
   const langCode = LANGUAGE_CODES[sessionLang] || 'en';
-  const result = await openai().audio.transcriptions.create({
+  // A clip normally comes back in about a second. Some requests hung for
+  // 17-26s, so the question arrived long after it was asked and the browser
+  // had already given up and re-sent the same clip. A stuck request is now
+  // abandoned after a few seconds and tried once more straight away.
+  let result = await openai(customKey).audio.transcriptions.create({
     model: MODEL,
     file,
     prompt: promptUsed,
     language: langCode,
-  });
+  }, { timeout: CLIP_TIMEOUT_MS, maxRetries: 1 });
 
-  const cleaned = stripPromptEcho(result.text, promptUsed, sessionLang || 'en');
+  /* With Indian-accented English, gpt-4o-mini-transcribe sometimes ignores
+   * language=en and writes the words in Arabic/Urdu script ("loops in Python"
+   * came back as لوغز إن بايثون). The filter rightly drops that as noise, so the
+   * question was lost. whisper-1 follows the language setting strictly, so
+   * only those chunks are redone with it. */
+  const isEnglish = langCode === 'en';
+  const wrongScript = isEnglish && (
+    NON_LATIN_SCRIPT_REGEX.test(String(result.text || '')) || looksForeignLatin(result.text)
+  );
+  /* About a third of the longer clips (2.5s+ of audio) came back completely
+   * empty from gpt-4o-mini-transcribe, and spoken questions were among them —
+   * the "voice not detected" reports. A clip that long is redone with
+   * whisper-1 when it yields nothing usable; short clips are mostly silence
+   * and are not worth the extra second. */
+  const missedSpeech = buffer.length >= RETRY_EMPTY_MIN_BYTES
+    && !stripPromptEcho(result.text, promptUsed, sessionLang || 'en');
+  let retried = null;
+  if (wrongScript || missedSpeech) {
+    retried = wrongScript ? 'script' : 'empty';
+    try {
+      const retryFile = await toFile(buffer, filename, { type: contentType || 'audio/webm' });
+      // No hint for whisper-1: given one, it answered silence with the hint's
+      // own words ("dialogue..", "vocabulary"), which then reached the copilot.
+      result = await openai(customKey).audio.transcriptions.create({
+        model: FALLBACK_MODEL,
+        file: retryFile,
+        language: isEnglish ? 'en' : langCode,
+      }, { timeout: CLIP_TIMEOUT_MS, maxRetries: 0 });
+    } catch (err) {
+      console.warn(`[TRANSCRIBE] ${FALLBACK_MODEL} retry failed: ${err.message}`);
+    }
+  }
+
+  // Still not English after the retry: better heard as nothing than answered
+  // as a question nobody asked.
+  if (isEnglish && looksForeignLatin(result.text)) result = { ...result, text: '' };
+  const rawCleaned = stripPromptEcho(result.text, promptUsed, sessionLang || 'en');
+  let cleaned = repairTechnicalAcoustics(rawCleaned);
+  // A clip this small is under a second of near-silence. Every greeting such a
+  // clip produced in the logs was invented ("Hello, can you hear me?"); real
+  // greetings arrived in clips two or more times this size.
+  if (buffer.length < TINY_CLIP_BYTES && GREETING_START.test(cleaned)) cleaned = '';
   return {
     text: cleaned,
     rawText: result.text,
+    retried,
     usage: result.usage || null,
   };
 }
 
 const router = express.Router();
 
-// Generous headroom above the real ~24/min a continuous 2.5s-chunk recording
-// produces (see speechService.js) — this is a backstop against a runaway or
-// malicious client, not a throttle on normal use.
+// Development-only trace of what each chunk transcribed to, so "the copilot
+// doesn't hear me" can be diagnosed from a file instead of the console.
+// Contains spoken content: never enabled in production, capped at ~1 MB.
+const fs = require('fs');
+const path = require('path');
+const DEBUG_LOG = path.join(__dirname, '..', 'logs', 'transcribe-debug.log');
+function debugLog(line) {
+  if (process.env.NODE_ENV === 'production') return;
+  try {
+    fs.mkdirSync(path.dirname(DEBUG_LOG), { recursive: true });
+    try { if (fs.statSync(DEBUG_LOG).size > 1024 * 1024) fs.writeFileSync(DEBUG_LOG, ''); } catch { /* new file */ }
+    fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${line}\n`);
+  } catch { /* diagnostics must never break transcription */ }
+}
+
+// Headroom for continuous 1-second chunk recording plus retries
 const transcribeLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 90,
+  max: 200,
   keyFn: (req) => `transcribe:${req.user.id}`,
 });
 
 router.post(
   '/',
-  requireAuth,
+  requireAuthLive,
   transcribeLimiter,
   express.raw({ type: () => true, limit: MAX_CHUNK_BYTES }),
   async (req, res, next) => {
-    if (!Buffer.isBuffer(req.body) || req.body.length < 1500) {
+    if (!Buffer.isBuffer(req.body) || req.body.length < 400) {
       return res.json({ text: '' });
     }
 
@@ -297,7 +392,7 @@ router.post(
       });
     }
 
-    const { getSession } = require('./sessions');
+    const { getSessionLive: getSession } = require('./sessions');
     const requestedSessionId = req.get('X-Session-Id');
 
     const [used, session] = await Promise.all([
@@ -315,13 +410,16 @@ router.post(
     }
 
     const sessionId = session ? session.id : null;
-    const usageId = await reserveUsage(req.user.id, MODEL, 0, RESERVE_TOKENS, sessionId);
+    const usagePromise = reserveUsage(req.user.id, MODEL, 0, RESERVE_TOKENS, sessionId);
     let inputTokens = 0;
     let outputTokens = 0;
 
     try {
       const contentType = req.get('Content-Type') || 'audio/webm';
-      const result = await transcribeAudio(req.body, filename, contentType, session);
+      const customKey = req.get('x-openai-api-key') || req.get('X-OpenAI-Key') || (req.headers['authorization']?.startsWith('Bearer ') && req.headers['authorization'].slice(7).startsWith('sk-') ? req.headers['authorization'].slice(7) : null);
+      const t0 = Date.now();
+      const result = await transcribeAudio(req.body, filename, contentType, session, customKey);
+      debugLog(`session=${sessionId || '-'} bytes=${req.body.length} ms=${Date.now() - t0}${result.retried ? ` retried=${result.retried}` : ''} raw=${JSON.stringify(result.rawText || '')} clean=${JSON.stringify(result.text || '')}`);
 
       if (result.usage) {
         inputTokens = result.usage.input_tokens || 0;
@@ -332,11 +430,9 @@ router.post(
         outputTokens = RESERVE_TOKENS;
       }
 
+      console.log(`[TRANSCRIBE] chunk=${req.body.length}b raw="${result.rawText || ''}" clean="${result.text || ''}"`);
       if (!result.text && result.rawText && result.rawText.trim()) {
-        // Whisper returned words but every sentence was prompt echo or a known
-        // hallucination. Logged rather than dropped in silence: during a live
-        // interview this is indistinguishable from "nobody spoke".
-        console.debug(
+        console.log(
           `[TRANSCRIPT DROP] reason=filtered t=${new Date().toISOString()} ` +
           `session=${sessionId || '-'} rawLen=${result.rawText.trim().length} ` +
           `raw="${result.rawText.trim().slice(0, 80).replace(/\s+/g, ' ')}"`
@@ -347,9 +443,14 @@ router.post(
       // Nothing was transcribed, so release the whole reservation.
       inputTokens = 0;
       outputTokens = 0;
+      console.warn(`[TRANSCRIBE CHUNK ERROR] ${err.name}: ${err.message}`);
+      // If it's a timeout or network blip, recover cleanly with empty text rather than crashing the client chunk pipeline
+      if (/timed?\s*out|timeout|abort/i.test(err.message || '')) {
+        return res.json({ text: '' });
+      }
       return next(err);
     } finally {
-      await settleUsage(usageId, inputTokens, outputTokens);
+      await settleUsage(await usagePromise, inputTokens, outputTokens);
     }
   }
 );
@@ -357,6 +458,7 @@ router.post(
 module.exports = {
   router,
   transcribeAudio,
+  stripPromptEcho,
   transcribeLimiter,
   MODEL,
   RESERVE_TOKENS,

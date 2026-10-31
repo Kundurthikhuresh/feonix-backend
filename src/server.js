@@ -1,9 +1,22 @@
-require('dotenv').config(); // Feonix AI API Server Loaded
+const path = require('path');
+const fs = require('fs');
+
+// Ensure .env is loaded reliably across macOS, Windows, and Linux regardless of process.cwd()
+const envCandidates = [
+  path.join(__dirname, '..', '.env'),
+  path.join(__dirname, '..', '..', '.env'),
+  path.join(process.cwd(), '.env'),
+];
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    require('dotenv').config({ path: envPath });
+  }
+}
+require('dotenv').config();
 
 const dns = require('dns');
 try { dns.setDefaultResultOrder('ipv4first'); } catch {}
 
-const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
@@ -32,6 +45,7 @@ const interviewPrepRouter = require('./interview-prep');
 const applicationsRouter = require('./applications');
 const { router: notificationsRouter } = require('./notifications');
 const assistantRouter = require('./assistant');
+const { router: promotionsRouter } = require('./promotions');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -48,15 +62,28 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3001',
   'http://127.0.0.1:3000',
+  'http://localhost:4000',
+  'http://127.0.0.1:4000',
 ].filter(Boolean);
 
+// Universal cross-platform CORS (handles Windows, macOS, local LAN, Electron scheme, and dev)
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, false);
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (
+      /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin) ||
+      /^https?:\/\/.*\.local(:\d+)?$/.test(origin) ||
+      origin.startsWith('app://') ||
+      origin.startsWith('feonixai://') ||
+      origin.startsWith('file://')
+    ) {
+      return callback(null, true);
     }
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    return callback(null, false);
   },
   credentials: true,
 }));
@@ -65,6 +92,7 @@ app.use(cors({
 app.use('/api/razorpay/webhook', express.raw({ type: 'application/json' }));
 
 app.use('/api/vision', express.json({ limit: '32mb' }));
+app.use('/api/admin', express.json({ limit: '16mb' }));
 app.use(express.json({ limit: '4mb' }));
 
 let sessionSecret = process.env.SESSION_SECRET;
@@ -133,6 +161,7 @@ app.use('/api/interview-prep', interviewPrepRouter);
 app.use('/api/applications', applicationsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/assistant', assistantRouter);
+app.use('/api/promotions', promotionsRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -216,6 +245,11 @@ app.use((err, req, res, next) => {
   return res
     .status(err.status || 500)
     .json({ error: err.code || 'server_error', message: err.message || 'Something went wrong.' });
+});
+
+// Under `node --watch` a crash leaves the API down until the next file save.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection (server kept running):', reason);
 });
 
 async function start() {

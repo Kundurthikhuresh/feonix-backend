@@ -5,7 +5,9 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "admin:provision": "node scripts/provisionAdmin.js",
+    "test": "node --test \"tests/*.test.js\""
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
