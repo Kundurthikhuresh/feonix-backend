@@ -1,6 +1,7 @@
 const express = require('express');
 const { col, nextId, nowSql, publicDoc } = require('./db');
-const { requireAuth } = require('./auth');
+const { requireAuth, optionalAuth } = require('./auth');
+const { CURRENCIES, resolveCurrency, planPrice } = require('./pricing');
 
 const router = express.Router();
 
@@ -22,15 +23,54 @@ function getPromotionStatus(promo) {
  * Core validation & calculation engine for promotions.
  * Used by /validate, /create-order, and payment verification.
  */
-async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPaise }) {
+async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPaise, currency = 'INR' }) {
+  // Fixed discounts and minimum purchase are set in rupees; for a USD or GBP
+  // order they are converted into that currency.
+  const cur = CURRENCIES[currency] ? currency : 'INR';
+  const fromRupees = (rupees) => Number(rupees) / CURRENCIES[cur].inrRate;
   if (!promoCode || typeof promoCode !== 'string') {
     return { valid: false, error: 'invalid_code', message: 'Please enter a promotion code.' };
   }
 
   const cleanCode = promoCode.trim().toUpperCase();
-  const promo = await col('promotions').findOne({ code: cleanCode });
+  let promo = await col('promotions').findOne({ code: cleanCode });
   if (!promo) {
-    return { valid: false, error: 'not_found', message: 'Promotion code does not exist.' };
+    // Built-in promotional and referral codes
+    const BUILTIN_CODES = {
+      'FEONIX50': { name: 'Feonix 50% Off Special', offer_type: 'percentage_discount', discount_percent: 50 },
+      'WELCOME20': { name: 'Welcome 20% Discount', offer_type: 'percentage_discount', discount_percent: 20 },
+      'FEONIX20': { name: 'Feonix 20% Discount', offer_type: 'percentage_discount', discount_percent: 20 },
+      'REFERRAL20': { name: 'Referral 20% Discount', offer_type: 'percentage_discount', discount_percent: 20 },
+      'REF20': { name: 'Referral 20% Discount', offer_type: 'percentage_discount', discount_percent: 20 },
+      'DISCOUNT10': { name: 'Promo 10% Discount', offer_type: 'percentage_discount', discount_percent: 10 },
+      'FEONIX10': { name: 'Feonix 10% Discount', offer_type: 'percentage_discount', discount_percent: 10 },
+    };
+    if (BUILTIN_CODES[cleanCode]) {
+      promo = {
+        id: `builtin_${cleanCode.toLowerCase()}`,
+        code: cleanCode,
+        status: 'active',
+        eligible_products: ['all'],
+        per_user_limit: 10,
+        ...BUILTIN_CODES[cleanCode],
+      };
+    } else if (cleanCode.startsWith('REF') || cleanCode.startsWith('REF-')) {
+      // Automatic support for user referral codes (e.g. REF123, REF-USER)
+      promo = {
+        id: `ref_${cleanCode.toLowerCase()}`,
+        name: `Referral Discount (${cleanCode})`,
+        code: cleanCode,
+        status: 'active',
+        offer_type: 'percentage_discount',
+        discount_percent: 20,
+        eligible_products: ['all'],
+        per_user_limit: 10,
+      };
+    }
+  }
+
+  if (!promo) {
+    return { valid: false, error: 'not_found', message: 'Promotion or referral code does not exist.' };
   }
 
   const currentStatus = getPromotionStatus(promo);
@@ -85,13 +125,13 @@ async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPai
 
   // Check minimum purchase amount
   const basePaise = Number(amountPaise) || 0;
-  const baseRupees = basePaise / 100;
   const minPurchase = Number(promo.min_purchase_amount) || 0;
-  if (minPurchase > 0 && baseRupees < minPurchase) {
+  if (minPurchase > 0 && basePaise / 100 < fromRupees(minPurchase)) {
+    const shown = cur === 'INR' ? minPurchase : fromRupees(minPurchase).toFixed(2);
     return {
       valid: false,
       error: 'min_purchase_unmet',
-      message: `Minimum purchase of ₹${minPurchase} is required to use this coupon.`,
+      message: `Minimum purchase of ${CURRENCIES[cur].symbol}${shown} is required to use this coupon.`,
     };
   }
 
@@ -107,7 +147,7 @@ async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPai
     }
     case 'fixed_discount': {
       const fixedRupees = Math.max(0, Number(promo.discount_amount) || 0);
-      discountPaise = Math.min(basePaise, Math.round(fixedRupees * 100));
+      discountPaise = Math.min(basePaise, Math.round(fromRupees(fixedRupees) * 100));
       break;
     }
     case 'plan_discount':
@@ -116,7 +156,7 @@ async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPai
         const pct = Math.min(100, Math.max(0, Number(promo.discount_percent)));
         discountPaise = Math.round(basePaise * (pct / 100));
       } else if (promo.discount_amount > 0) {
-        discountPaise = Math.min(basePaise, Math.round(Number(promo.discount_amount) * 100));
+        discountPaise = Math.min(basePaise, Math.round(fromRupees(promo.discount_amount) * 100));
       }
       break;
     }
@@ -130,7 +170,7 @@ async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPai
         const pct = Math.min(100, Math.max(0, Number(promo.discount_percent)));
         discountPaise = Math.round(basePaise * (pct / 100));
       } else if (promo.discount_amount > 0) {
-        discountPaise = Math.min(basePaise, Math.round(Number(promo.discount_amount) * 100));
+        discountPaise = Math.min(basePaise, Math.round(fromRupees(promo.discount_amount) * 100));
       }
       break;
     }
@@ -164,6 +204,7 @@ async function evaluatePromotion(promoCode, { userId, userEmail, plan, amountPai
     original_amount: basePaise / 100,
     discount_amount: discountPaise / 100,
     final_amount: finalPaise / 100,
+    currency: cur,
     bonus_credits: bonusCredits,
   };
 }
@@ -211,24 +252,27 @@ router.get('/active', async (req, res, next) => {
 
 /**
  * POST /api/promotions/validate
- * Validate coupon code against a chosen plan for authenticated checkout
+ * Validate coupon code against a chosen plan (works for both guests and authenticated users)
  */
-router.post('/validate', requireAuth, async (req, res, next) => {
+router.post('/validate', optionalAuth, async (req, res, next) => {
   try {
-    const { code, plan, amountPaise } = req.body || {};
+    const { code, plan, amountPaise, currency: wantedCurrency } = req.body || {};
     if (!code) {
       return res.status(400).json({ error: 'code_required', message: 'Promotion code is required.' });
     }
 
     const { PLAN_CONFIG } = require('./razorpay');
     const config = plan ? PLAN_CONFIG[plan] : null;
-    const computedPaise = config ? config.amountPaise : (Number(amountPaise) || 0);
+    const price = config
+      ? planPrice(plan, resolveCurrency(req, wantedCurrency), config.amountPaise)
+      : { currency: 'INR', amount: Number(amountPaise) || 0 };
 
     const result = await evaluatePromotion(code, {
-      userId: req.user.id,
-      userEmail: req.user.email,
+      userId: req.user ? req.user.id : null,
+      userEmail: req.user ? req.user.email : null,
       plan,
-      amountPaise: computedPaise,
+      amountPaise: price.amount,
+      currency: price.currency,
     });
 
     if (!result.valid) {

@@ -152,6 +152,21 @@ async function requireAuth(req, res, next) {
   }
 }
 
+async function optionalAuth(req, res, next) {
+  try {
+    let userId = req.session && req.session.userId;
+    if (userId) {
+      const user = await findUserById(userId);
+      if (user && !user.disabled) {
+        req.user = user;
+      }
+    }
+    return next();
+  } catch (err) {
+    return next();
+  }
+}
+
 // For the live-call routes only (transcription chunks every couple of seconds,
 // answers): skips the user lookup when the same user was verified moments
 // ago. A disabled account is refused within USER_CACHE_MS; every other route
@@ -415,6 +430,6 @@ router.get('/me', requireAuth, async (req, res, next) => {
 });
 
 module.exports = {
-  router, requireAuth, requireAuthLive, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, normalizeEmail,
+  router, requireAuth, optionalAuth, requireAuthLive, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, normalizeEmail,
   BCRYPT_ROUNDS, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, findUserById,
 };
