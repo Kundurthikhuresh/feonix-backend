@@ -9,6 +9,14 @@ function expiryOf(sess) {
   return Date.now() + DEFAULT_TTL_MS;
 }
 
+// Every API request loads the login session before anything else runs, and on
+// Atlas that is a ~80ms (up to ~270ms) round trip — paid twice per live
+// question (transcription + answer). Reads are served from memory for a short
+// window; every write/destroy below updates the cache, so logout and login
+// changes still take effect immediately in this (single) process.
+const READ_CACHE_MS = 30 * 1000;
+const sessionCache = new Map();
+
 class MongoSessionStore extends session.Store {
   constructor({ pruneIntervalMs = 60 * 60 * 1000 } = {}) {
     super();
@@ -35,15 +43,27 @@ class MongoSessionStore extends session.Store {
   }
 
   get(sid, cb) {
+    const hit = sessionCache.get(sid);
+    // Destroyed here moments ago, with the database delete still in flight.
+    if (hit && hit.destroyed) return cb(null, null);
+    if (hit && Date.now() - hit.at < READ_CACHE_MS && hit.expires > Date.now()) {
+      return cb(null, JSON.parse(hit.data));
+    }
     col('sessions')
       .findOne({ sid })
       .then((row) => {
-        if (!row) return cb(null, null);
+        if (!row) {
+          sessionCache.delete(sid);
+          return cb(null, null);
+        }
         if (row.expires <= Date.now()) {
+          sessionCache.delete(sid);
           return col('sessions').deleteOne({ sid }).then(() => cb(null, null));
         }
         try {
-          return cb(null, JSON.parse(row.data));
+          const parsed = JSON.parse(row.data);
+          sessionCache.set(sid, { data: row.data, expires: row.expires, at: Date.now() });
+          return cb(null, parsed);
         } catch {
           return cb(null, null);
         }
@@ -52,10 +72,12 @@ class MongoSessionStore extends session.Store {
   }
 
   set(sid, sess, cb) {
+    const data = JSON.stringify(sess);
+    sessionCache.set(sid, { data, expires: expiryOf(sess), at: Date.now() });
     col('sessions')
       .updateOne(
         { sid },
-        { $set: { sid, expires: expiryOf(sess), data: JSON.stringify(sess) } },
+        { $set: { sid, expires: expiryOf(sess), data } },
         { upsert: true }
       )
       .then(() => cb(null))
@@ -63,20 +85,30 @@ class MongoSessionStore extends session.Store {
   }
 
   touch(sid, sess, cb) {
+    const hit = sessionCache.get(sid);
+    if (hit) hit.expires = expiryOf(sess);
     col('sessions')
       .updateOne({ sid }, { $set: { expires: expiryOf(sess) } })
       .then(() => cb(null))
       .catch((err) => cb(err));
   }
 
+  // Every sign-in and signup destroys the previous session (regenerate), and
+  // waiting on that delete added a full Atlas round trip to both. The session
+  // is refused at once through the cache marker; the row is deleted behind
+  // the reply, with one retry.
   destroy(sid, cb) {
-    col('sessions')
-      .deleteOne({ sid })
-      .then(() => cb(null))
-      .catch((err) => cb(err));
+    sessionCache.set(sid, { destroyed: true, at: Date.now() });
+    const remove = () => col('sessions').deleteOne({ sid });
+    remove()
+      .catch(() => remove())
+      .then(() => sessionCache.delete(sid))
+      .catch((err) => console.error('[session-store] destroy failed:', err.message));
+    cb(null);
   }
 
   clear(cb) {
+    sessionCache.clear();
     col('sessions')
       .deleteMany({})
       .then(() => cb(null))
@@ -98,6 +130,7 @@ async function destroyUserSessions(userId) {
     try {
       const data = JSON.parse(row.data);
       if (Number(data.userId) === Number(userId)) {
+        sessionCache.delete(row.sid);
         await col('sessions').deleteOne({ sid: row.sid });
         n += 1;
       }

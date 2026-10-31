@@ -1,6 +1,6 @@
 const express = require('express');
 const { col, nextId, nowSql, isExpired, addMinutesFromNow, minutesBetween, publicDoc, sessionTokensUsed, loadDocContent, tokensUsedThisMonth, reserveUsage, settleUsage } = require('./db');
-const { requireAuth } = require('./auth');
+const { requireAuth, requireAuthLive } = require('./auth');
 const credits = require('./credits');
 const { transcribeAudio, transcribeLimiter, MODEL: TRANSCRIBE_MODEL, RESERVE_TOKENS: TRANSCRIBE_RESERVE_TOKENS } = require('./transcribe');
 const { buildMessages, classifyQuestion, modelFor, answerLimiter } = require('./answer');
@@ -37,7 +37,9 @@ async function enrichSession(session) {
       }
     } else {
       const expiredByExpiresAt = s.expires_at && isExpired(s.expires_at);
-      const limitMin = (s.billing_kind === 'trial' || s.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+      const limitMin = (s.billing_kind === 'trial' || s.plan === 'free')
+        ? (credits.TRIAL_MINUTES || 10)
+        : (s.max_minutes || 60);
       const expiredByStartedAt = !s.expires_at && s.started_at && minutesBetween(s.started_at, nowSql()) >= limitMin;
       if ((expiredByExpiresAt || expiredByStartedAt) && s.status !== 'ended') {
         s.status = 'ended';
@@ -50,16 +52,43 @@ async function enrichSession(session) {
       }
     }
   }
+  }
+  const numId = Number(s.id);
+  const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(s.id)] } : s.id;
   const [tokens_used, answer_count, line_count] = await Promise.all([
     sessionTokensUsed(s.id),
-    col('answers').countDocuments({ session_id: s.id }),
-    col('transcript_lines').countDocuments({ session_id: s.id }),
+    col('answers').countDocuments({ session_id: sessionQuery }),
+    col('transcript_lines').countDocuments({ session_id: sessionQuery }),
   ]);
   return { ...s, tokens_used, answer_count, line_count };
 }
 
 async function ownedSession(userId, id) {
-  return publicDoc(await col('call_sessions').findOne({ id: Number(id), user_id: userId }));
+  if (!id) return null;
+  const numId = Number(id);
+  const numUser = Number(userId);
+  const idQuery = Number.isFinite(numId) ? { $in: [numId, String(id)] } : String(id);
+  const userQuery = Number.isFinite(numUser) ? { $in: [numUser, String(userId)] } : userId;
+  return publicDoc(await col('call_sessions').findOne({ id: idQuery, user_id: userQuery }));
+}
+
+function looksLikeQuestion(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length < 5) return false;
+
+  // Filter out single-word or 2-word filler fragments like "What?", "Why?", "Okay?", "Right?"
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 3 && !/\b(explain|describe|write|code|solve|implement|clarify)\b/i.test(t)) {
+    return false;
+  }
+
+  if (t.endsWith('?') || t.includes('?')) return true;
+
+  const QUESTION_STARTERS = /^(what|why|how|when|where|who|whom|whose|which|can|could|would|will|shall|should|do|does|did|is|are|was|were|have|has|had|tell me|walk me through|explain|describe|elaborate on|give me|give an example|talk about|compare|discuss|solve|write|implement|find|calculate|clarify|define)\b/i;
+  if (QUESTION_STARTERS.test(t)) return true;
+
+  const INNER_QUESTION_PATTERNS = /\b(what is|what are|what would|what does|how do|how does|how would|how can|how to|why do|why does|why is|why are|can you|could you|would you|have you|do you know|do you have|difference between|explain how|tell me about|walk me through|in your opinion|in your experience)\b/i;
+  return INNER_QUESTION_PATTERNS.test(t);
 }
 
 router.get('/', requireAuth, async (req, res, next) => {
@@ -167,19 +196,22 @@ router.post('/', requireAuth, async (req, res, next) => {
 
     const id = await nextId('call_sessions');
 
-    // Deduct 1 trial credit (or verify paid credit entitlement) when creating a session
-    let opened;
-    try {
-      opened = await credits.openSession(req.user.id, id, billing);
-    } catch (err) {
-      return {
-        status: err.status || 409,
-        body: {
-          error: err.code || 'no_trials_left',
-          message: err.message || 'All 5 free trial sessions have been used. Payment is required to continue.',
-        },
-      };
+    // Verify user has any allowance (trials, paid credits, or unlimited) before creating
+    const [trialRem, paidBal, unlimited] = await Promise.all([
+      credits.trialsRemaining(req.user.id),
+      credits.creditBalance(req.user.id),
+      credits.isUnlimited(req.user.id),
+    ]);
+    if (!unlimited && trialRem <= 0 && paidBal < 0.5) {
+      return res.status(409).json({
+        error: 'no_trials_left',
+        message: 'All 5 free trials have been used and you have no paid credits. Please purchase credits to continue.',
+      });
     }
+
+    const defaultBilling = billing === 'paid'
+      ? (paidBal >= 0.5 || unlimited ? 'paid' : 'trial')
+      : (trialRem > 0 || unlimited ? 'trial' : 'paid');
 
     const session = {
       id,
@@ -197,9 +229,9 @@ router.post('/', requireAuth, async (req, res, next) => {
       save_transcript: saveTranscript,
       context,
       agent,
-      plan: opened.kind === 'trial' ? 'free' : 'full',
+      plan: defaultBilling === 'trial' ? 'free' : 'full',
       expires_at: null,
-      billing_kind: opened.kind,
+      billing_kind: defaultBilling,
       settled_at: null,
       notes: null,
     };
@@ -228,15 +260,17 @@ router.get('/:id', requireAuth, async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
+    const numId = Number(owned.id);
+    const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(owned.id)] } : owned.id;
     const lines = await col('transcript_lines')
-      .find({ session_id: owned.id })
+      .find({ session_id: sessionQuery })
       .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
       .sort({ id: 1 })
       .toArray();
     const answers = await col('answers')
-      .find({ session_id: owned.id })
+      .find({ session_id: sessionQuery })
       .project({ _id: 0, id: 1, question: 1, reply: 1, mode: 1, action: 1, created_at: 1 })
-      .sort({ id: 1 })
+      .sort({ id: -1 })
       .toArray();
     return res.json({ session: await enrichSession(owned), transcript: lines, answers });
   } catch (err) {
@@ -249,11 +283,19 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
 
-    // Once expired, a session cannot be restarted only if the user has no remaining trials/credits and is not unlimited
+    // Once ended, a session cannot be restarted — create a new session
+    if (owned.status === 'ended') {
+      return res.status(410).json({
+        error: 'session_ended',
+        message: 'This session has ended. Please create a new session.',
+      });
+    }
+
     if (owned.expires_at && isExpired(owned.expires_at)) {
       const isUnlimitedUser = await credits.isUnlimited(req.user.id);
       const remainingCredits = await credits.creditBalance(req.user.id);
-      if (!isUnlimitedUser && remainingCredits <= 0) {
+      const trialRem = await credits.trialsRemaining(req.user.id);
+      if (!isUnlimitedUser && remainingCredits <= 0 && trialRem <= 0) {
         const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
         return res.status(410).json({
           error: 'session_expired',
@@ -262,8 +304,47 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
       }
     }
 
+    const isCopilotOpen = Boolean(req.body && req.body.copilot_open);
+
+    // If Copilot has ALREADY been opened before for this session:
+    if (owned.copilot_opened_at) {
+      // Check if session has expired
+      if (owned.expires_at && isExpired(owned.expires_at)) {
+        const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+        return res.status(410).json({
+          error: 'session_expired',
+          message: `This session has expired after ${limitMin} minutes. Please create a new session.`,
+        });
+      }
+
+      // If active and unexpired, return existing session without resetting clock (refreshes preserve timer)
+      if (owned.status === 'active' && owned.started_at) {
+        return res.json({ session: await enrichSession(owned), account: await credits.accountSummary(req.user.id) });
+      }
+    }
+
+    // If this session is already active but Copilot was NEVER opened yet (!owned.copilot_opened_at):
+    // Opening Copilot starts the timer fresh from the exact moment Copilot is opened!
+    if (owned.status === 'active' && isCopilotOpen && !owned.copilot_opened_at) {
+      const minutes = owned.max_minutes
+        || ((owned.billing_kind === 'trial' || owned.plan === 'free') ? credits.TRIAL_MINUTES : 60);
+      const $set = {
+        started_at: nowSql(),
+        expires_at: addMinutesFromNow(minutes),
+        copilot_opened_at: nowSql(),
+      };
+      await col('call_sessions').updateOne({ id: owned.id }, { $set });
+      const account = await credits.accountSummary(req.user.id);
+      return res.json({ session: await enrichSession({ ...owned, ...$set }), account });
+    }
+
+    // If session is already active, not copilot_open, and unexpired:
+    if (owned.status === 'active' && owned.started_at && (!owned.expires_at || !isExpired(owned.expires_at))) {
+      return res.json({ session: await enrichSession(owned), account: await credits.accountSummary(req.user.id) });
+    }
+
     const requested = String((req.body && req.body.billing) || '')
-      || (owned.billing_kind || (String(req.body && req.body.plan) === 'full' ? 'paid' : 'trial'));
+      || (String(req.body && req.body.plan) === 'full' ? 'paid' : (String(req.body && req.body.plan) === 'free' ? 'trial' : (owned.billing_kind || 'trial')));
 
     let opened;
     try {
@@ -271,27 +352,28 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     } catch (err) {
       return res.status(err.status || 409).json({
         error: err.code || 'no_trials_left',
-        message: err.message || 'All 5 free credits have been used. Payment is required to continue.',
+        message: err.message || 'All 5 free trials have been used. Payment is required to continue.',
       });
     }
 
-    const forceKind = opened.kind === 'unlimited';
     const isFirstStart = !owned.started_at;
-    const defaultMinutes = (opened.kind === 'trial' || requested === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
-    const sessionMinutes = opened.minutes || defaultMinutes;
+    const sessionMinutes = opened.minutes || (opened.kind === 'trial' ? (credits.TRIAL_MINUTES || 10) : 60);
     const activeExpiry = (owned.expires_at && !isExpired(owned.expires_at)) ? owned.expires_at : addMinutesFromNow(sessionMinutes);
     const $set = {
       status: 'active',
-      plan: owned.plan || (opened.kind === 'trial' ? 'free' : 'full'),
+      plan: opened.kind === 'trial' ? 'free' : 'full',
+      billing_kind: opened.kind,
       started_at: isFirstStart ? nowSql() : owned.started_at,
       expires_at: activeExpiry,
+      max_minutes: sessionMinutes,
       ended_at: null,
       settled_at: null,
     };
-    if (forceKind || !owned.billing_kind) $set.billing_kind = opened.kind;
+    if (isCopilotOpen) $set.copilot_opened_at = nowSql();
 
     await col('call_sessions').updateOne({ id: owned.id }, { $set });
-    res.json({ session: await enrichSession(await ownedSession(req.user.id, owned.id)) });
+    const fresh = await ownedSession(req.user.id, owned.id);
+    res.json({ session: await enrichSession(fresh), account: await credits.accountSummary(req.user.id) });
   } catch (err) {
     next(err);
   }
@@ -301,16 +383,10 @@ router.post('/:id/resume', requireAuth, async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
-
-    const resumeMinutes = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
-    const newExpiresAt = addMinutesFromNow(resumeMinutes);
-    await col('call_sessions').updateOne(
-      { id: owned.id },
-      { $set: { status: 'active', expires_at: newExpiresAt, ended_at: null } }
-    );
-
-    const updated = await ownedSession(req.user.id, owned.id);
-    res.json({ session: await enrichSession(updated) });
+    if (owned.status === 'ended' || (owned.expires_at && isExpired(owned.expires_at))) {
+      return res.status(410).json({ error: 'session_ended', message: 'This session has ended or expired.' });
+    }
+    res.json({ session: await enrichSession(owned), account: await credits.accountSummary(req.user.id) });
   } catch (err) {
     next(err);
   }
@@ -341,6 +417,9 @@ router.post('/:id/transcript', requireAuth, async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
+    if (owned.status === 'ended' || (owned.expires_at && isExpired(owned.expires_at))) {
+      return res.status(410).json({ error: 'session_ended', message: 'This session has ended or expired.' });
+    }
     const text = String((req.body && req.body.text) || '').trim();
     if (!text) return res.status(400).json({ error: 'empty_line' });
     const id = await nextId('transcript_lines');
@@ -357,15 +436,19 @@ router.post('/:id/transcript', requireAuth, async (req, res, next) => {
   }
 });
 
-router.delete('/:id', requireAuth, async (req, res, next) => {
+router.delete('/:id', requireAuthLive, async (req, res, next) => {
   try {
     const result = await col('call_sessions').deleteOne({
       id: Number(req.params.id),
       user_id: req.user.id,
     });
     if (!result.deletedCount) return res.status(404).json({ error: 'not_found' });
-    await col('transcript_lines').deleteMany({ session_id: Number(req.params.id) });
+    // The session row is gone, so the delete is done as far as the user is
+    // concerned; its transcript lines are cleaned up without holding the reply.
     res.status(204).end();
+    col('transcript_lines').deleteMany({ session_id: Number(req.params.id) })
+      .catch((err) => console.warn(`[SESSION DELETE] transcript cleanup failed: ${err.message}`));
+    return;
   } catch (err) {
     next(err);
   }
@@ -375,6 +458,9 @@ router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio')
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
+    if (owned.status === 'ended' || (owned.expires_at && isExpired(owned.expires_at))) {
+      return res.status(410).json({ error: 'session_ended', message: 'This session has ended or expired.' });
+    }
 
     if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
       return res.status(400).json({ error: 'empty_audio', message: 'No audio chunk received.' });
@@ -432,7 +518,8 @@ router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio')
     const trimmedText = text.trim();
     const isQuestion = trimmedText.endsWith('?') ||
       /^(what|why|how|when|where|who|whom|whose|which|can|could|would|will|shall|should|do|does|did|is|are|was|were|have|has|had|tell me|walk me through|explain|describe|elaborate on)\b/i.test(trimmedText) ||
-      classifyQuestion(trimmedText) !== 'OPEN_ENDED';
+      classifyQuestion(trimmedText) !== 'OPEN_ENDED' ||
+      looksLikeQuestion(text);
 
     const transcriptLineId = await nextId('transcript_lines');
     await col('transcript_lines').insertOne({
@@ -631,8 +718,10 @@ router.get('/:id/transcript', requireAuth, async (req, res, next) => {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
 
+    const numId = Number(owned.id);
+    const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(owned.id)] } : owned.id;
     const lines = await col('transcript_lines')
-      .find({ session_id: owned.id })
+      .find({ session_id: sessionQuery })
       .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
       .sort({ id: 1 })
       .toArray();
@@ -654,4 +743,39 @@ async function getSession(userId, id) {
   return ownedSession(userId, id);
 }
 
-module.exports = { router, sessionExists, getSession, ownedSession };
+// Live-call routes look the session up on every transcription chunk and
+// answer; a few seconds of reuse saves an Atlas round trip on each. Returns a
+// copy so a caller mutating its row cannot alter the cached one.
+const LIVE_SESSION_CACHE_MS = 5 * 1000;
+// Past LIVE_SESSION_CACHE_MS a found session is still served from cache while
+// it is re-read in the background, so a question never waits on this lookup.
+// Expiry is checked against expires_at by the caller, so time-up still holds.
+const LIVE_SESSION_STALE_MS = 10 * 60 * 1000;
+const liveSessionCache = new Map();
+
+function refreshLiveSession(key, userId, id) {
+  return ownedSession(userId, id).then((session) => {
+    liveSessionCache.set(key, { session, at: Date.now() });
+    if (liveSessionCache.size > 500) liveSessionCache.clear();
+    return session;
+  });
+}
+
+async function getSessionLive(userId, id) {
+  if (!id) return null;
+  const key = `${userId}:${id}`;
+  const hit = liveSessionCache.get(key);
+  const age = hit ? Date.now() - hit.at : Infinity;
+  if (hit && age < LIVE_SESSION_CACHE_MS) return hit.session && { ...hit.session };
+  if (hit && hit.session && age < LIVE_SESSION_STALE_MS) {
+    if (!hit.refreshing) {
+      hit.refreshing = true;
+      refreshLiveSession(key, userId, id).catch(() => { hit.refreshing = false; });
+    }
+    return { ...hit.session };
+  }
+  const session = await refreshLiveSession(key, userId, id);
+  return session && { ...session };
+}
+
+module.exports = { router, sessionExists, getSession, getSessionLive, ownedSession, looksLikeQuestion };

@@ -52,7 +52,9 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
       token,
       session_id: session.id,
       expires_in_ms: TTL_MS,
-      deep_link: `${SCHEME}://launch?token=${token}&session=${session.id}&action=start_session&start=open`,
+      // No action=start_session: the desktop app opens its Start Interview
+      // screen first and the copilot only after the user clicks Start Session.
+      deep_link: `${SCHEME}://launch?token=${token}&session=${session.id}`,
     });
   } catch (err) {
     next(err);
@@ -85,7 +87,8 @@ router.post('/:id/launch-desktop', requireAuth, async (req, res, next) => {
     // a hardcoded local Windows path on the server process, which only ever
     // made sense if the API happened to run on the same machine as the
     // desktop app. That's not how a hosted backend works, so it's removed.
-    const deepLink = `${SCHEME}://launch?token=${token}&session=${sessionId}&action=start_session&start=open`;
+    // Opens the desktop Start Interview screen; the copilot starts from there.
+    const deepLink = `${SCHEME}://launch?token=${token}&session=${sessionId}`;
 
     res.json({
       ok: true,

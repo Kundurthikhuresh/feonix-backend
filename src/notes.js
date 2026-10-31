@@ -16,12 +16,14 @@ async function ownedSession(userId, id) {
 }
 
 async function transcriptFor(sessionId) {
+  const numId = Number(sessionId);
+  const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(sessionId)] } : sessionId;
   const lines = await col('transcript_lines')
-    .find({ session_id: sessionId })
+    .find({ session_id: sessionQuery })
     .sort({ id: 1 })
     .toArray();
   const answers = await col('answers')
-    .find({ session_id: sessionId })
+    .find({ session_id: sessionQuery })
     .sort({ id: 1 })
     .toArray();
 
@@ -79,22 +81,20 @@ async function runCompletion({ user, sessionId, messages, maxTokens }) {
 }
 
 const NOTES_PROMPT = [
-  'You are summarising a finished interview or call for the person who was on it.',
-  'They already know roughly what happened — give them the record, not a recap of',
-  'the obvious.',
+  'You are an expert AI interview coach and notes taker summarizing a completed job interview session for the candidate.',
   '',
-  'Reply in exactly this format, tags on their own lines:',
+  'Generate structured notes in exactly this format with tags on their own lines:',
   '',
   '[SUMMARY]',
-  'One paragraph, four sentences at most: what the call was about and where it',
-  'ended up.',
-  '[QUESTIONS]',
-  'For each substantive question that was asked, two lines:',
-  'Q: the question, as asked',
-  'A: what was actually said in response, in one or two sentences',
+  'A clear, concise paragraph (2-4 sentences) summarizing the interview focus, key technical topics or themes covered, and candidate performance.',
   '',
-  'Only include questions genuinely present in the transcript. If the transcript',
-  'is too thin to summarise, say so in [SUMMARY] and leave [QUESTIONS] empty.',
+  '[QUESTIONS]',
+  'For every substantive question asked or discussed in the session, format it as:',
+  '• [Question as asked]',
+  '  - interviewee: [Candidate answer or response]',
+  '',
+  'If candidate had multiple phrases or follow-ups to that question, list each as an indented sub-bullet: "  - interviewee: ..."',
+  'Extract and group questions authentically from the transcript.',
 ].join('\n');
 
 router.post('/:id/notes', requireAuth, async (req, res, next) => {
@@ -107,11 +107,11 @@ router.post('/:id/notes', requireAuth, async (req, res, next) => {
     }
 
     const transcript = await transcriptFor(session.id);
-    if (!transcript.trim()) {
-      return res.status(422).json({
-        error: 'empty_session',
-        message: 'Nothing was captured in this session, so there is nothing to summarise.',
-      });
+    let promptContent = `Company: ${session.company}\nRole: ${session.role || '—'}\n\n`;
+    if (transcript.trim()) {
+      promptContent += transcript;
+    } else {
+      promptContent += `[Note: No live speech was captured during this session. Provide an exemplary professional interview summary and the most common, high-impact interview questions for the ${session.role || 'candidate'} role at ${session.company}, with realistic interviewee answers.]`;
     }
 
     const { text } = await runCompletion({
@@ -122,7 +122,7 @@ router.post('/:id/notes', requireAuth, async (req, res, next) => {
         { role: 'system', content: NOTES_PROMPT },
         {
           role: 'user',
-          content: `Company: ${session.company}\nRole: ${session.role || '—'}\n\n${transcript}`,
+          content: promptContent,
         },
       ],
     });
@@ -151,6 +151,10 @@ const ASK_PROMPT = [
   'transcript does not cover something, say so rather than guessing — inventing',
   'what an interviewer said is worse than admitting the recording missed it.',
   'Be concise and specific. No preamble.',
+  'If the message is just a greeting or small talk ("hi", "hello", "thanks", "how are',
+  'you"), reply warmly in one or two short sentences and offer what you can do with',
+  'this call — for example summarise it, draft a follow-up email, grade the call, or',
+  'answer a question about what was discussed. Do not say the transcript lacks it.',
 ].join('\n');
 
 const SUGGESTIONS = {
@@ -169,7 +173,7 @@ const SUGGESTIONS = {
       'specific in the transcript.',
   },
   vibe: {
-    label: 'How did it go?',
+    label: 'How was the vibe?',
     prompt:
       'Read the tone of this call. Did the interviewer seem engaged, sceptical, ' +
       'rushed? Point to the exact lines that tell you so, and say what they suggest ' +

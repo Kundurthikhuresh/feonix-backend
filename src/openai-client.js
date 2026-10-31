@@ -6,21 +6,23 @@ const OpenAI = require('openai');
 
 let client = null;
 
-function openai() {
-  if (!client) {
-    if (!process.env.OPENAI_API_KEY) {
-      const err = new Error('OPENAI_API_KEY is not set');
-      err.status = 503;
-      err.code = 'not_configured';
-      throw err;
-    }
-    client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-      // Lets the app be pointed at a compatible proxy or a local stub.
+function openai(customKey) {
+  const key = customKey || process.env.OPENAI_API_KEY;
+  if (!key) {
+    const err = new Error('OPENAI_API_KEY is not configured. Please add OPENAI_API_KEY to your feonix-backend/.env file.');
+    err.status = 503;
+    err.code = 'not_configured';
+    throw err;
+  }
+  if (!client || customKey) {
+    const instance = new OpenAI({
+      apiKey: key,
       baseURL: process.env.OPENAI_BASE_URL || undefined,
-      timeout: Number(process.env.OPENAI_TIMEOUT_MS || 30000),
-      maxRetries: 1, // a live interview would rather fail fast than retry
+      timeout: Number(process.env.OPENAI_TIMEOUT_MS || 60000),
+      maxRetries: 1,
     });
+    if (!customKey) client = instance;
+    return instance;
   }
   return client;
 }

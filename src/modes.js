@@ -6,21 +6,56 @@
 // else — tone, structure, what gets emphasised — follows from that one choice
 // plus the session's own job description, not from a menu of personas.
 
+const OWNER_VOICE_RULE =
+  'OWNER VOICE, FIRST PERSON: Answer as the candidate talking about their own work, in simple confident spoken English. ' +
+  'Use first-person ownership phrases naturally wherever they fit — "I used...", "I implemented...", "I developed...", ' +
+  '"I worked on...", "I did...", "I handled...", "I faced this issue...", "I solved it by...", "In my project...", ' +
+  '"My approach would be..." — but vary them and do not force one into every sentence. Only claim as done what the ' +
+  'resume or trusted experience supports; for anything else (hypotheticals, unknown details) say "I would..." ' +
+  'instead of inventing employers, projects, outcomes or numbers.';
+
 /**
  * The reply format. The length rule is injected rather than hardcoded: when the
  * session carries its own instructions ("answer in 10 lines"), stating a
  * competing "5-6 lines" here makes the model pick one, and it picks this one.
  * So the conflict is removed at the source instead of being arbitrated.
  */
+// The shape of every answer card: one direct sentence with the key phrase in
+// bold (shown on the same line as "Answer:"), then bullets with the important
+// term of each in bold. Easy to glance at and read out mid-interview, where a
+// block of paragraphs is not.
+const ANSWER_SHAPE = [
+  'Write [ANSWER] in exactly this shape (markdown):',
+  'Line 1: ONE direct sentence that answers the question. Bold ONLY its key phrase (3 to 7 words), never the whole sentence. No heading, no "Answer:" label.',
+  'Then 4 to 6 bullet lines (never more than 6), each starting with "- ", each one or two complete sentences. EVERY bullet bolds its own key term or phrase (2 to 6 words).',
+  'Extra depth goes inside the bullets, not into more bullets. Nothing after the last bullet: no closing paragraph, no summary, no sub-headings.',
+  '',
+  'Example of the shape (for a different question, "What is Python?"):',
+  'Python is a **high-level, interpreted programming language** used to build many kinds of software.',
+  '- It is known for **simple, readable syntax**, so code reads almost like plain English and teams can maintain it easily.',
+  '- Python is **dynamically typed**, which means variable types are checked at runtime, making it quick to prototype.',
+  '- It ships with a huge **standard library** and ecosystem, like Django for web apps and Pandas for data work.',
+  '- I have used it for **automation scripts and backend APIs**, where its fast development speed really helped.',
+].join('\n');
+
+const CODING_ANSWER_SHAPE = [
+  'Write [ANSWER] in exactly this shape (markdown):',
+  'Line 1: ONE direct sentence saying what the solution does, with the key idea in **bold**.',
+  'Then the complete runnable code in one fenced code block.',
+  'Then 4 to 6 bullet lines, each starting with "- ", explaining the approach, the logic, the **Time and Space complexity** and the edge cases, with the key term of each bullet in **bold**.',
+].join('\n');
+
 function formatBlock(lengthRule, pointsRule, isCoding = false) {
   if (isCoding) {
     return [
-      'Reply in exactly this format, tags on their own lines:',
+      'Reply in exactly this format, tags on their own lines, [ANSWER] first:',
       '',
-      '[TYPE] coding',
-      '[POINTS]',
-      pointsRule || '- 3 to 5 key architecture, data structure & algorithm speaking beats',
       '[ANSWER]',
+      CODING_ANSWER_SHAPE,
+      `Depth: ${lengthRule}`,
+      '[POINTS]',
+      pointsRule || '- 3 to 4 key technical approach & Big-O speaking beats',
+      '',
       'CRITICAL CHATGPT-GRADE FULL CODE DIRECTIVE (ZERO PLACEHOLDERS / COMPLETE WORKING CODE):',
       'Provide the 100% COMPLETE, production-ready, fully runnable code inside standard markdown code block(s) (```<language> ... ```).',
       '1. COMPLETE IMPLEMENTATION: Output the full code without truncating, omitting, or taking shortcuts. Include all imports, class declarations, constructors, fields, getters/setters, helper methods, business logic, and error handling.',
@@ -30,28 +65,36 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
       '   - Step-by-step logic walkthrough of how the code executes.',
       '   - Design choices, data structures, and edge cases handled.',
       '   - Time & Space Complexity analysis using Big-O notation.',
-      '   - Instructions on how to compile and run the code.',
+      '',
+      'MANDATORY 90% HUMAN INTERVIEW THINKING & QUALITY RULES (UNDER 10% AI, 90% HUMAN THINKING):',
+      '1. UNDER 10% AI, 90% HUMAN THINKING: Sound like an articulate, thoughtful senior engineer speaking candidly in an interview room. Avoid robotic AI transitions ("furthermore", "additionally", "in conclusion") and textbook boilerplate.',
+      `2. ${OWNER_VOICE_RULE}`,
+      '3. RICH DEPTH & INFORMATION: Give a comprehensive, in-depth explanation covering the algorithmic intuition, data structures, Big-O Time & Space complexity, edge cases, and production considerations.',
+      '4. ANSWER LIKE AN OWNER, NOT A BOT: Speak with direct engineering authority. Never sound like a chatbot, tutor, or assistant ("Sure! Here is the code", "As an AI").',
+      '5. CONTEXTUAL RELEVANCE: If the question or prompt is brief, fragmented, or references prior dialogue, examine the recent transcript to identify the exact technical problem and deliver a focused, highly relevant solution.',
     ].join('\n');
   }
 
   return [
-    'Reply in exactly this format, tags on their own lines:',
+    // [ANSWER] first: the copilot shows only the spoken answer, so writing the
+    // points first delayed the first visible words and made the card jump when
+    // its content switched from the points to the answer.
+    'Reply in exactly this format, tags on their own lines, [ANSWER] first:',
     '',
-    '[TYPE] behavioral | technical | scenario | experience | motivation | other',
-    '[POINTS]',
-    pointsRule || '- 3 to 5 punchy, high-impact key speaking beats',
     '[ANSWER]',
-    lengthRule,
+    ANSWER_SHAPE,
+    `Depth (spread across the opening sentence and the bullets): ${lengthRule}`,
+    '[POINTS]',
+    pointsRule || '- 4 to 6 substantive, high-impact speaking beats summarizing key pillars',
     '',
-    'ACCURACY & HIGH-IMPACT QUALITY DIRECTIVES:',
-    'Deliver a sharp, authoritative, and technically precise answer tailored for live interview delivery:',
-    '1. DIRECT & ACCURATE: Address the specific question immediately with zero filler, fluff, or evasive disclaimers.',
-    '2. SUBSTANCE & MECHANICS: Explain core technical mechanics, architectural principles, or practical execution steps clearly.',
-    '3. REAL-WORLD GROUNDING: Include concrete examples, trade-offs, technologies, and measurable outcomes.',
-    '4. NATURAL SPOKEN LENGTH: Provide 2 to 4 well-developed paragraphs (approx. 140-250 words) that can be spoken naturally and confidently in 60-90 seconds.',
-    '',
-    'For [TYPE] behavioral, structure points using STAR (Situation, Task, Action, Result) in a compelling first-person narrative.',
-    'All [POINTS] must be affirmative, high-impact speaking beats that can be scanned instantly. Never emit disclaimers or negative points.',
+    'MANDATORY 90% HUMAN INTERVIEW THINKING & QUALITY RULES (UNDER 10% AI, 90% HUMAN THINKING):',
+    '1. UNDER 10% AI, 90% HUMAN THINKING: Deliver an authentic, conversational spoken interview answer. Sound 90% like natural human thinking and under 10% AI generated. Absolutely no textbook essays, robotic transition words ("furthermore", "moreover", "in conclusion"), or generic AI summaries.',
+    `2. ${OWNER_VOICE_RULE}`,
+    '3. MORE SENTENCES & DEEP INFORMATION: Provide a rich, thorough, informative answer with deep substance. Cover the core direct answer, how it works under the hood, real-world architectural experience, performance optimization, and trade-offs/edge cases.',
+    '4. ANSWER LIKE AN OWNER, NOT A BOT: Speak strictly as the engineer and architect who made the technical decisions, owned production deployments, and resolved outages. Never speak as an AI, bot, or spectator.',
+    '5. CONTEXTUAL RELEVANCE: If the question is short, fragmented (e.g. "What?", "Why?", "How?"), or refers to earlier remarks, inspect the recent conversation transcript to identify the true technical subject and answer THAT directly and accurately. Never provide an irrelevant answer.',
+    '6. For behavioral questions, structure points using STAR with real metrics, technical decisions, and tangible outcomes.',
+    'All [POINTS] must be affirmative, high-impact speaking beats. Never emit disclaimers or negative points.',
   ].join('\n');
 }
 
@@ -168,55 +211,48 @@ function classifyQuestion(question) {
  */
 const TYPE_LENGTH_RULES = {
   CODING:
-    'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with a clear step-by-step execution walkthrough, design choices, edge cases handled, and Big-O Time & Space complexity analysis.',
+    'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with 8 to 12 substantive spoken sentences explaining the algorithmic approach, intuition, step-by-step logic, Big-O Time & Space complexity, edge case handling, and production trade-offs with 90% human thinking and under 10% AI precision.',
   YES_NO:
-    'State the direct answer upfront clearly, followed by a concise, authoritative technical justification: the underlying principles, production evidence, practical configuration nuances, and real-world examples (4 to 8 focused sentences).',
+    'State a direct, confident answer upfront, followed by 6 to 9 detailed conversational sentences explaining the technical reasoning, real-world production experience, design decisions, and concrete outcomes.',
   SHORT_DIRECT:
-    'Answer the core question directly and authoritatively, followed by a crisp breakdown of the technical mechanism, runtime lifecycle, edge cases, and real-world applications (5 to 10 substantive sentences).',
+    '6 to 10 comprehensive spoken sentences explaining the core concept, practical mechanisms under the hood, hands-on production setup, and critical trade-offs with 90% human thinking and deep technical clarity.',
   EXPERIENCE:
-    'Deliver an in-depth, confident engineering narrative: detail your technical stack, production architectures engineered, operational workflows, key challenges overcome, and concrete impact (8 to 14 substantive sentences).',
+    '8 to 14 rich conversational sentences detailing hands-on architectural experience: the tech stack and tools chosen, system design decisions, challenges resolved in production, performance optimizations, and measurable impact.',
   BEHAVIORAL:
-    'Deliver a structured STAR methodology response: detail the Situation (context & team scale), Task (specific technical challenge), multi-step Actions (architectural decisions, technologies leveraged, execution steps), and measurable Results (metrics, performance, and key takeaways) across 8 to 15 well-developed sentences.',
+    '8 to 14 structured STAR sentences with deep substance: the specific high-stakes Situation and Task, the architectural & technical Action taken, and the measurable Result with real metrics, lessons learned, and trade-offs. Sound 90% human and conversational.',
   TECHNICAL:
-    'Deliver an authoritative, deeply informative technical explanation: define the core mechanism, how it executes under the hood, underlying data structures, step-by-step lifecycle flow, key engineering trade-offs, and industry best practices (8 to 14 substantive sentences).',
+    '8 to 14 comprehensive spoken sentences delivering deep technical information: how the concept works under the hood, architectural patterns, hands-on implementation details from real systems, performance considerations, and key trade-offs without generic AI fluff.',
   SCENARIO:
-    'Deliver a structured, production-ready scenario walkthrough: incident triage sequence, root cause analysis, architecture isolation, live remediation, and preventive post-mortem measures (8 to 14 substantive sentences).',
+    '8 to 14 thorough conversational sentences detailing the step-by-step engineering approach: triage and diagnostics, root cause analysis, architecture decisions, execution plan, rollback/mitigation strategies, and post-incident hardening.',
   MOTIVATION:
-    'Deliver a compelling, substantive response connecting the company\'s mission and architecture with your technical philosophy, engineering challenges you are eager to tackle, and the impact you will deliver (6 to 10 substantive sentences).',
+    '6 to 10 authentic sentences connecting hands-on technical background and engineering values with the company\'s specific technical scale, architecture, and engineering challenges.',
   CLARIFICATION:
-    'Deliver a crystal-clear, focused explanation: clarify the core concept directly, followed by technical nuances, common misconceptions, and a concrete real-world example (5 to 9 substantive sentences).',
+    '5 to 8 crystal-clear, informative spoken sentences clarifying the technical concept thoroughly, explaining under-the-hood mechanics and practical distinctions.',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
 
 /** How many [POINTS] fragments suit this type. */
 function pointsRuleFor(type) {
   if (type === 'CODING') {
-    return '- 3 to 5 key fragments: algorithm approach, data structures, execution flow, time/space complexity';
+    return '- 3 to 4 key technical fragments: algorithm intuition, data structures, Big-O Time & Space complexity, key edge cases';
   }
   if (['YES_NO', 'SHORT_DIRECT', 'CLARIFICATION'].includes(type)) {
-    return '- 3 to 5 high-impact fragments summarizing the core stance and technical pillars';
+    return '- 3 to 4 high-impact speaking beats summarizing core stance, technical mechanism, and practical application';
   }
-  return '- 3 to 5 punchy, high-impact key speaking beats covering the major discussion milestones';
+  return '- 4 to 6 substantive, high-impact speaking beats covering core architecture, implementation details, metrics, and trade-offs';
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: Deliver a comprehensive, deeply informative response of 8 to 14 substantive sentences' +
-  ' covering background context, core mechanics, step-by-step breakdown, architecture, real-world practical examples, and trade-offs.';
+  'What to say out loud: Deliver 8 to 14 comprehensive, authentic spoken sentences packed with rich technical information, under-the-hood mechanics, real production experience, and practical trade-offs. Sound 90% like natural human thinking and under 10% AI generated.';
 
 /**
- * Parses user numeric line requests (e.g. "answer in 50 lines", "give 60 lines").
- * Supports requests up to 100 lines.
+ * Parses user numeric line requests (e.g. "answer in 5 lines", "give 6 lines").
  */
 function explicitLengthRule(context) {
   const m = String(context || '').match(/(\d{1,3})\s*(?:short\s*)?(?:lines?|sentences?|points?)/i);
   if (!m) return null;
-  const n = Math.max(1, Math.min(100, Number(m[1])));
-  // gpt-4o-mini reliably follows an explicit SENTENCE count but quietly
-  // ignores a "lines" or word-count target (see the QA note above
-  // TYPE_LENGTH_RULES) — a request for "N lines" is translated into a
-  // sentence count for that reason, not just relabelled.
-  return `What to say out loud: provide an exhaustive, deeply informative breakdown of AT LEAST ${n} SENTENCES of rich technical information — do not stop short of ${n} sentences. ` +
-         `Cover concepts, mechanics, step-by-step execution, real-world examples, and trade-offs across at least ${n} substantive sentences.`;
+  const n = Math.max(1, Math.min(50, Number(m[1])));
+  return `What to say out loud: provide an authentic, spoken response of ${n} sentences in a natural senior engineer voice with 90% human thinking and under 10% AI precision.`;
 }
 
 const CONTEXT_LENGTH_RULE =
@@ -293,67 +329,18 @@ function groundingBlock(resume, jobDescription) {
 
 const SHARED_RULES = [
   'Rules:',
-  '- Write in the first person, as the user would say it out loud.',
-  '- You have been listening to the whole call, not just the last sentence.',
-  '  The transcript before the question is what the question is about. When it',
-  '  says "that", "this", "it", "the role" or "those requirements", work out',
-  '  what was actually described and answer about THAT specifically. An',
-  '  interviewer often spends a minute setting something out before asking a',
-  '  short question about it.',
-  '- Answer the question that was asked. A direct or yes/no question ("are you',
-  '  comfortable with that?", "have you used X?") gets a direct answer first —',
-  '  yes, or no, or the honest qualifier — then the rest of the required',
-  '  sentence count is the specific evidence that backs it: where, how, what',
-  '  came of it. The exact sentence count given below is the actual length —',
-  '  meet it in full, do not stop early because the question sounded simple.',
-  '- Ground every claim in the documents provided. If they do not support an',
-  '  answer, say what is actually there and how it transfers — never invent',
-  '  employers, dates, titles, metrics, or projects.',
-  '- There is a hard line between what the candidate DOES and a specific thing',
-  '  that HAPPENED. The documents may list responsibilities — supporting UPS',
-  '  systems, coordinating vendors, root cause analysis. Saying the candidate',
-  '  does those things is true and fine. Turning one into an episode is not:',
-  '  a particular failure, a named incident, a deadline, a vendor conversation,',
-  '  an outage, a number, a percentage, a result, a project with an outcome.',
-  '  None of those may be produced unless they appear in the documents. Plausible',
-  '  is not the same as true, and an invented story is the one thing an',
-  '  interviewer can check.',
-  '- Asked for an example that the documents do not contain, do not manufacture',
-  '  fictional companies or dates; instead, talk affirmatively and concretely about',
-  '  the work you do in that area: the methodology, the failure modes you anticipate,',
-  '  and how you solve it. Never apologize or claim a lack of experience — speak as',
-  '  a seasoned engineer on the best-practice approach.',
-  '- The resume is what the candidate has done. The job description is what the',
-  '  employer wants. Never read the second as the first. A technology named only',
-  '  in the job description is not experience the candidate has.',
-  '- Do not expand or define a technical acronym unless the expansion appears in',
-  '  the documents. If you are not certain what the letters stand for, describe',
-  '  what the system does and how the candidate has used it instead. A wrong',
-  '  expansion of a term central to the role destroys credibility instantly.',
-  '- Never invent a personal fact. Notice period, salary, current or expected',
-  '  compensation, visa status, work authorisation, start date, location,',
-  '  relocation, citizenship, certifications and total years of experience come',
-  '  only from the documents. If one is asked for and is not there, say you',
-  '  would need to confirm it and offer to follow up — do not produce a number.',
-  '- The conversation above includes what you have already said. Do not repeat',
-  '  it. A follow-up asks for something new: "what was your contribution" wants',
-  '  your part rather than the team\'s, "what was the result" wants the outcome',
-  '  and the numbers, "what would you do differently" wants the judgement. If a',
-  '  point is already said, move past it.',
-  '- Vary how you open, because the question varies. Start wherever the answer',
-  '  naturally starts — the example that comes to mind, a direct yes, the part',
-  '  that was hardest. Do not open three answers running the same way, and do',
-  '  not vary the opening for its own sake.',
-  '- Plain spoken English. Not "leverage my expertise", "aligns perfectly",',
-  '  "operational excellence", "passion for", "commitment to" — say the ordinary',
-  '  thing a competent engineer says out loud. No "firstly", "secondly",',
-  '  "additionally", "furthermore", "lastly": those are for writing.',
-  '- Do not fake being human. No filler words, no invented hesitation, no',
-  '  deliberate mistakes. Natural means accurate and plainly said.',
-  '- Accurate, substantive & comprehensive: Deliver an authoritative, high-value answer tailored to the question, covering key concepts, technical mechanics, architecture, practical execution steps, and trade-offs.',
+  '- UNDER 10% AI GENERATED OUTPUT, 90% HUMAN THINKING: The output must sound 90% like authentic human interview thinking and under 10% AI generated. Strictly avoid robotic AI transitions ("furthermore", "additionally", "in conclusion", "it is worth noting", "it is vital to understand"), and textbook boilerplate. The answer is laid out as one bold opening sentence plus bullets (see the format below), but each bullet still reads like something a person would say. Talk like an articulate, seasoned engineer speaking directly and thoughtfully in an interview room.',
+  '- MORE SENTENCES & HIGH TECHNICAL DEPTH: Deliver thorough, informative, and detailed answers (8 to 14+ substantive sentences under [ANSWER] and 4 to 6 rich speaking beats under [POINTS]). Provide deep technical value: explain under-the-hood mechanisms, real architectural designs, performance optimization, and trade-offs. Never give shallow 2-3 line summaries.',
+  `- ${OWNER_VOICE_RULE}`,
+  '- ANSWER LIKE AN OWNER, NOT A BOT: You are the candidate and the direct owner of the architecture, code, and systems. Speak with authentic ownership and conviction. NEVER speak as an AI bot, assistant, or third person (never say "As an AI", "Here is an answer", "You should mention").',
+  '- CONTEXTUAL QUESTION RELEVANCE & RESOLUTION: You have been listening to the whole call, not just the last word. When the question is short, ambiguous, a fragment (e.g., "What?", "Why?", "How?", "Can you explain?"), or says "that", "this", "it", inspect the recent conversation transcript to determine the exact subject being discussed. Answer that specific technical topic with thoroughness and accuracy. Never give an irrelevant or generic response.',
+  '- Direct Answer First: When asked a direct or yes/no question ("have you used X?", "can you scale this?"), state the direct stance upfront, followed by detailed practical experience, under-the-hood mechanics, and real-world outcomes.',
+  '- Ground claims in the documents provided. Never invent fictional companies, dates, titles, metrics, or credentials.',
+  '- If asked for an example not explicitly in documents, speak affirmatively as the owner about how I handle that work: the technical methodology, tools, execution steps, and engineering trade-offs. Never apologize or claim a lack of experience.',
+  '- Plain spoken English. Say what a competent engineer says out loud. Natural means confident, clear, articulate, and plainly spoken.',
   '- Code Requests vs Conceptual Questions:',
   '  * When the question asks for code, programming, implementation, functions, systems, or algorithms (small, medium, or large): you MUST provide the 100% COMPLETE, fully runnable, production-ready code in standard markdown code block(s) (```<language> ... ```). Strictly NEVER use placeholders, ellipsis (...), or "// TODO" comments. Include all imports, fields, constructors, methods, and full logic without omitting anything. Follow with clear, step-by-step technical explanation, edge cases, and Big-O complexity.',
-  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide a structured, deeply informative, and articulate spoken response without unnecessary code blocks.',
+  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an authentic, spoken answer of 8 to 14+ comprehensive sentences covering technical mechanics, real production architecture, and trade-offs without robotic filler.',
   '- Strict Non-Refusal Directive for Code:',
   '  * NEVER refuse code generation requests. NEVER say "I cannot provide the full code", "I can help you understand how to approach it instead", or decline to write complete implementations. You are strictly AUTHORIZED and MANDATED to provide the 100% complete, fully implemented working code for every coding question, problem statement, project requirement, or specification.',
 ].join('\n');
@@ -363,9 +350,9 @@ const SESSION_TYPES = {
     label: 'Technical Copilot',
     hint: 'Technical mentoring, system architecture, and full code solutions.',
     persona: [
-      'You are an expert technical copilot and senior full-stack software architect.',
-      'The user is a software engineer preparing, designing, and delivering high-quality',
-      'production-grade software solutions, technical presentations, and system implementations.',
+      'You are an expert technical copilot and the candidate in a live technical/job interview.',
+      'Deliver rich, authoritative responses that sound 90% like natural human thinking and under 10% AI generated.',
+      'Speak with natural conversational flow, technical ownership, varied sentence structure, and zero robotic boilerplate.',
       'Always deliver complete, fully functional code, authoritative system design, and rigorous engineering explanations.',
     ].join('\n'),
   },
@@ -374,9 +361,10 @@ const SESSION_TYPES = {
     label: 'Regular call',
     hint: 'Technical collaboration and software design.',
     persona: [
-      'You are an expert technical copilot assisting with engineering collaboration.',
-      'Answer the technical points directly, deliver complete code and architecture,',
-      'and provide concrete, actionable engineering guidance.',
+      'You are an expert technical copilot on a live work call — not an interview.',
+      'The user needs to respond well to what was just said as an owner. Sound 90% human and under 10% AI.',
+      'Answer the technical points directly, deliver complete code and architecture, and provide concrete, actionable engineering guidance.',
+      'Do not frame replies as though the user is being assessed.',
     ].join('\n'),
   },
 };
@@ -394,8 +382,15 @@ const ACTIONS = {
     // on about a third of replies, and the overlay renders nothing without it.
     instruction: (question) =>
       `## The question you must answer\n${question}\n\n` +
-      '## Reminder\nEmit all three tags. [ANSWER] is mandatory and must be on its\n' +
-      'own line before the spoken reply, even for a one-sentence answer.',
+      '## Tone & Depth Requirements:\n' +
+      '- 90% HUMAN THINKING, UNDER 10% AI: Natural, articulate spoken delivery as a senior practitioner. Strictly zero textbook essays or robotic filler phrases ("furthermore", "additionally", "in conclusion").\n' +
+      '- MORE SENTENCES & RICH INFORMATION: Deliver 8 to 14+ detailed, substantive sentences under [ANSWER] and 4 to 6 comprehensive speaking beats under [POINTS]. Detail under-the-hood mechanics, real production architecture, and trade-offs.\n' +
+      `- ${OWNER_VOICE_RULE}\n` +
+      '- CONTEXTUAL QUESTION RESOLUTION: If the question is brief, fragmented (e.g. "What?", "Why?", "How?"), or references previous speech, inspect the recent conversation transcript above to answer the true underlying technical topic with direct relevance.\n' +
+      '- ANSWER LIKE AN OWNER, NOT A BOT: You are the engineer who architected, implemented, and owns the solution.\n' +
+      '## Reminder\nStart with the [ANSWER] tag on its own line, then the reply in the required shape\n' +
+      '(one direct sentence with the key phrase in **bold**, then 4 to 6 "- " bullets with key terms in **bold**),\n' +
+      'then the [POINTS] tag and the points. [ANSWER] is mandatory and comes first.',
   },
 
   shorten: {
@@ -403,8 +398,9 @@ const ACTIONS = {
     usesFormat: true,
     instruction: (question) =>
       `## The question\n${question}\n\n` +
-      '## Task\nAnswer it again, materially shorter. Two sentences at most in\n' +
-      '[ANSWER], and at most three points. Cut adjectives and hedges first.',
+      '## Task\nAnswer it again, materially shorter: in [ANSWER], one direct sentence with\n' +
+      'the key phrase in **bold**, then at most two short "- " bullets. At most three points.\n' +
+      'Cut adjectives and hedges first.',
   },
 
   deepen: {
