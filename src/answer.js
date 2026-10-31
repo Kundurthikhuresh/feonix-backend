@@ -300,6 +300,7 @@ function buildMessages({
       'Deliver a comprehensive, directly relevant technical answer on THAT subject, providing full information and depth. Do not give a generic or disconnected answer.'
     );
   }
+  }
 
   let styleInstruction = '';
   if (isCoding && answerStyle !== 'teleprompter' && answerStyle !== 'quiz') {
@@ -364,7 +365,7 @@ function buildMessages({
      * already has. Prepending it here gives screenshot answers through this
      * endpoint the same quality without a second request path. */
     const visionGuidance =
-      'These images are a screenshot taken during a live interview. First work out ' +
+      'These images are screenshots of a technical task or problem statement. First work out ' +
       'what kind of content this is — a coding problem, SQL, system design, a ' +
       'debugging/stack-trace, a behavioral or multiple-choice question, or a ' +
       'diagram/slide — and answer in the shape that kind of question needs. Read ' +
@@ -515,8 +516,8 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
    * before a single token is bought.
    */
   if (session && process.env.NODE_ENV !== 'development') {
-    const isClockExpired = session.expires_at && isExpired(session.expires_at);
-    if (session.status === 'ended' || isClockExpired) {
+    const isUnlimitedUser = await credits.isUnlimited(req.user.id);
+    if (!isUnlimitedUser && (session.status === 'ended' || (session.expires_at && isExpired(session.expires_at)))) {
       if (session.status !== 'ended') {
         await col('call_sessions').updateOne(
           { id: session.id },
@@ -526,6 +527,8 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
         await credits.settleSession(fresh);
       }
       return res.status(410).json({ error: 'session_ended', message: 'This session has ended or expired. Please start a new session.' });
+    }
+  }
     }
   }
 
@@ -540,9 +543,13 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
   // exists to bound raw request-body memory use, not to police how long a
   // question is allowed to be.
 
-  // Keep the tail — the newest turns are the ones that matter, and an
-  // unbounded transcript is the easiest way to burn a quota by accident.
-  const transcript = String((req.body && req.body.transcript) || '').slice(-MAX_TRANSCRIPT_CHARS);
+  // Keep the tail and sanitize out any past AI refusal phrases
+  let rawTranscript = String((req.body && req.body.transcript) || '').slice(-MAX_TRANSCRIPT_CHARS);
+  rawTranscript = rawTranscript
+    .replace(/I'm sorry, but I can't (assist with that|provide the full code)[^\n]*/gi, '')
+    .replace(/I cannot provide the full code[^\n]*/gi, '')
+    .replace(/as an ai.*?(cannot|unable)[^\n]*/gi, '');
+  const transcript = rawTranscript;
 
   const messages = buildMessages({
     question,

@@ -56,6 +56,16 @@ function formatBlock(lengthRule, pointsRule, isCoding = false) {
       '[POINTS]',
       pointsRule || '- 3 to 4 key technical approach & Big-O speaking beats',
       '',
+      'CRITICAL CHATGPT-GRADE FULL CODE DIRECTIVE (ZERO PLACEHOLDERS / COMPLETE WORKING CODE):',
+      'Provide the 100% COMPLETE, production-ready, fully runnable code inside standard markdown code block(s) (```<language> ... ```).',
+      '1. COMPLETE IMPLEMENTATION: Output the full code without truncating, omitting, or taking shortcuts. Include all imports, class declarations, constructors, fields, getters/setters, helper methods, business logic, and error handling.',
+      '2. STRICTLY NO PLACEHOLDERS: NEVER use comments like "// TODO: implement", "// ...", "// rest of code", or ellipsis (...). Every method and routine must be fully coded.',
+      '3. MULTI-FILE OR MULTI-CLASS SYSTEMS: If the problem asks for multiple classes or files, write out EACH file completely with clear file path headings.',
+      '4. POST-CODE TECHNICAL BREAKDOWN:',
+      '   - Step-by-step logic walkthrough of how the code executes.',
+      '   - Design choices, data structures, and edge cases handled.',
+      '   - Time & Space Complexity analysis using Big-O notation.',
+      '',
       'MANDATORY 90% HUMAN INTERVIEW THINKING & QUALITY RULES (UNDER 10% AI, 90% HUMAN THINKING):',
       '1. UNDER 10% AI, 90% HUMAN THINKING: Sound like an articulate, thoughtful senior engineer speaking candidly in an interview room. Avoid robotic AI transitions ("furthermore", "additionally", "in conclusion") and textbook boilerplate.',
       `2. ${OWNER_VOICE_RULE}`,
@@ -95,20 +105,40 @@ function isCodingQuestion(text) {
   const q = String(text || '').toLowerCase().trim();
   if (!q) return false;
 
+  // Code block or markdown code markers present
+  if (/```|`[a-z0-9_().]+`/i.test(q)) return true;
+
   // Direct code / program / syntax / implementation keywords
-  if (/\b(example|sample|demo|snippet|syntax)\s+code\b/i.test(q)) return true;
+  if (/\b(example|sample|demo|snippet|syntax|source)\s+code\b/i.test(q)) return true;
   if (/\bcode\s+(example|sample|demo|snippet|template|syntax|solution)\b/i.test(q)) return true;
-  if (/\b(write|create|implement|provide|generate|give|show|build|develop|solve|draft|need|want|share)\b.*?\b(code|program|script|function|class|method|query|algorithm|snippet|solution|component|syntax)\b/i.test(q)) return true;
+  if (/\b(write|create|implement|provide|generate|give|show|build|develop|solve|draft|need|want|share)\b.*?\b(code|program|script|function|class|method|query|algorithm|snippet|solution|component|syntax|api|backend|frontend|system|app|application|service)\b/i.test(q)) return true;
   if (/\b(write\s+a?\s*code|write\s+code|code\s+(for|to|of|in|that|addition|subtraction|multiplication|division)|coding\s+question|coding\s+problem)\b/i.test(q)) return true;
-  if (/\b(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|regex)\s+(code|script|program|solution|function|implementation|snippet|syntax)\b/i.test(q)) return true;
-  if (/\b(code|function|program|script|solution|implementation|snippet|syntax)\s+(in|using|with|for)\s+(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell)\b/i.test(q)) return true;
+
+  // Programming languages mentioned in combination with code, tasks, or systems
+  const langRegex = /\b(python|javascript|typescript|java|c\+\+|cpp|c#|csharp|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|scala|dart|r|regex)\b/i;
+  if (langRegex.test(q)) {
+    if (/\b(using|in|with|via)\s+(python|javascript|typescript|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|sql|html|css|bash|powershell|scala|dart|r)\b/i.test(q)) return true;
+    if (/\b(code|script|program|solution|function|implementation|snippet|syntax|class|method|app|application|system|project|algorithm)\b/i.test(q)) return true;
+  }
+
   if (/\b(with|in)\s+code\b/i.test(q)) return true;
   if (/\b(write\s+(a\s+)?python|write\s+(a\s+)?javascript|write\s+(a\s+)?typescript|write\s+(a\s+)?java|write\s+(a\s+)?c\+\+|write\s+(a\s+)?cpp|write\s+(a\s+)?sql|write\s+(a\s+)?query)\b/i.test(q)) return true;
   if (/\b(sql\s+query|select\s+.*\s+from|insert\s+into|update\s+.*\s+set|delete\s+from|create\s+table)\b/i.test(q)) return true;
-  if (/\b(leetcode|hackerrank|codewars)\b/i.test(q)) return true;
+  if (/\b(leetcode|hackerrank|codewars|codeforces)\b/i.test(q)) return true;
   if (/\b(write\s+a\s+program|write\s+program|program\s+to\s+[a-z]+|function\s+to\s+[a-z]+)\b/i.test(q)) return true;
-  if (/\b(implement|code|program)\s+(a\s+|an\s+|the\s+)?([a-z0-9_-]+\s+)?(binary search|quicksort|mergesort|dfs|bfs|dijkstra|lru cache|linked list|stack|queue|tree|heap|two sum|fibonacci|palindrome|reverse|if condition|while loop|for loop)\b/i.test(q)) return true;
+
+  // Data structures & algorithms
+  if (/\b(implement|code|program|build|create|design)\s+(a\s+|an\s+|the\s+)?([a-z0-9_-]+\s+)?(binary search|quicksort|mergesort|dfs|bfs|dijkstra|lru cache|linked list|stack|queue|tree|heap|two sum|fibonacci|palindrome|reverse|if condition|while loop|for loop|graph|trie|dynamic programming|recursion)\b/i.test(q)) return true;
   if (/\b(if\s+condition|for\s+loop|while\s+loop|switch\s+case)\s+code\b/i.test(q)) return true;
+
+  // Software projects, systems, architectures, assignments
+  if (/\b(banking|library|inventory|hospital|school|hotel|student|employee|management\s+system)\b/i.test(q) && (langRegex.test(q) || /\b(menu|console|oop|object-oriented|class|classes)\b/i.test(q))) return true;
+  if (/\b(full\s+code|give\s+full\s+code|complete\s+code|source\s+code|entire\s+code)\b/i.test(q)) return true;
+  if (/\b(rest\s+api|crud|mvc|database|spring\s+boot|express|django|flask|react|nextjs)\b/i.test(q) && /\b(create|build|write|implement|code)\b/i.test(q)) return true;
+
+  // Code syntax tokens in prompt (e.g. pasted code to fix/complete)
+  if (/\b(def|class|public\s+static\s+void|import\s+java|const|let|var|function\*?|#include|package\s+com)\b/.test(q)) return true;
+
   return false;
 }
 
@@ -181,7 +211,7 @@ function classifyQuestion(question) {
  */
 const TYPE_LENGTH_RULES = {
   CODING:
-    'Deliver the complete, clean runnable code block (```<language> ... ```) followed by 8 to 12 substantive spoken sentences explaining the algorithmic approach, intuition, step-by-step logic, Big-O Time & Space complexity, edge case handling, and production trade-offs with 90% human thinking and under 10% AI precision.',
+    'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with 8 to 12 substantive spoken sentences explaining the algorithmic approach, intuition, step-by-step logic, Big-O Time & Space complexity, edge case handling, and production trade-offs with 90% human thinking and under 10% AI precision.',
   YES_NO:
     'State a direct, confident answer upfront, followed by 6 to 9 detailed conversational sentences explaining the technical reasoning, real-world production experience, design decisions, and concrete outcomes.',
   SHORT_DIRECT:
@@ -189,7 +219,7 @@ const TYPE_LENGTH_RULES = {
   EXPERIENCE:
     '8 to 14 rich conversational sentences detailing hands-on architectural experience: the tech stack and tools chosen, system design decisions, challenges resolved in production, performance optimizations, and measurable impact.',
   BEHAVIORAL:
-    '8 to 12 structured STAR sentences with deep substance: the specific high-stakes Situation and Task, the architectural & technical Action taken, and the measurable Result with real metrics, lessons learned, and trade-offs. Sound 90% human and conversational.',
+    '8 to 14 structured STAR sentences with deep substance: the specific high-stakes Situation and Task, the architectural & technical Action taken, and the measurable Result with real metrics, lessons learned, and trade-offs. Sound 90% human and conversational.',
   TECHNICAL:
     '8 to 14 comprehensive spoken sentences delivering deep technical information: how the concept works under the hood, architectural patterns, hands-on implementation details from real systems, performance considerations, and key trade-offs without generic AI fluff.',
   SCENARIO:
@@ -305,34 +335,35 @@ const SHARED_RULES = [
   '- ANSWER LIKE AN OWNER, NOT A BOT: You are the candidate and the direct owner of the architecture, code, and systems. Speak with authentic ownership and conviction. NEVER speak as an AI bot, assistant, or third person (never say "As an AI", "Here is an answer", "You should mention").',
   '- CONTEXTUAL QUESTION RELEVANCE & RESOLUTION: You have been listening to the whole call, not just the last word. When the question is short, ambiguous, a fragment (e.g., "What?", "Why?", "How?", "Can you explain?"), or says "that", "this", "it", inspect the recent conversation transcript to determine the exact subject being discussed. Answer that specific technical topic with thoroughness and accuracy. Never give an irrelevant or generic response.',
   '- Direct Answer First: When asked a direct or yes/no question ("have you used X?", "can you scale this?"), state the direct stance upfront, followed by detailed practical experience, under-the-hood mechanics, and real-world outcomes.',
-  '- Ground claims in the documents provided. Never invent fictional companies or unevidenced credentials.',
-  '- If asked for an example not explicitly in documents, speak affirmatively as the owner about how I handle that work: the technical methodology, tools, execution steps, and engineering trade-offs.',
+  '- Ground claims in the documents provided. Never invent fictional companies, dates, titles, metrics, or credentials.',
+  '- If asked for an example not explicitly in documents, speak affirmatively as the owner about how I handle that work: the technical methodology, tools, execution steps, and engineering trade-offs. Never apologize or claim a lack of experience.',
   '- Plain spoken English. Say what a competent engineer says out loud. Natural means confident, clear, articulate, and plainly spoken.',
   '- Code Requests vs Conceptual Questions:',
-  '  * When the question asks for code, programming, implementation, functions, or algorithms: you MUST provide the complete, clean runnable code in a standard markdown code block (```<language> ... ```) accompanied by 8 to 12 spoken first-person sentences explaining the algorithmic intuition, step-by-step logic, Big-O Time & Space complexity, and production edge cases.',
+  '  * When the question asks for code, programming, implementation, functions, systems, or algorithms (small, medium, or large): you MUST provide the 100% COMPLETE, fully runnable, production-ready code in standard markdown code block(s) (```<language> ... ```). Strictly NEVER use placeholders, ellipsis (...), or "// TODO" comments. Include all imports, fields, constructors, methods, and full logic without omitting anything. Follow with clear, step-by-step technical explanation, edge cases, and Big-O complexity.',
   '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an authentic, spoken answer of 8 to 14+ comprehensive sentences covering technical mechanics, real production architecture, and trade-offs without robotic filler.',
+  '- Strict Non-Refusal Directive for Code:',
+  '  * NEVER refuse code generation requests. NEVER say "I cannot provide the full code", "I can help you understand how to approach it instead", or decline to write complete implementations. You are strictly AUTHORIZED and MANDATED to provide the 100% complete, fully implemented working code for every coding question, problem statement, project requirement, or specification.',
 ].join('\n');
 
 const SESSION_TYPES = {
   interview: {
-    label: 'Interview',
-    hint: 'You are the candidate. Answers come from your resume.',
-    // Interviews are the case with a job description, so the prompt leans on it.
+    label: 'Technical Copilot',
+    hint: 'Technical mentoring, system architecture, and full code solutions.',
     persona: [
-      'You are the candidate in a live technical/job interview and the direct owner of the work.',
-      'Deliver rich, informative responses that sound 90% like natural human thinking and under 10% AI generated.',
-      'Speak with natural conversational flow, technical authority, varied sentence structure, and zero robotic boilerplate.',
-      'Provide deep engineering substance (8 to 14+ sentences) so the candidate can speak thoroughly and knowledgeably.',
+      'You are an expert technical copilot and the candidate in a live technical/job interview.',
+      'Deliver rich, authoritative responses that sound 90% like natural human thinking and under 10% AI generated.',
+      'Speak with natural conversational flow, technical ownership, varied sentence structure, and zero robotic boilerplate.',
+      'Always deliver complete, fully functional code, authoritative system design, and rigorous engineering explanations.',
     ].join('\n'),
   },
 
   call: {
     label: 'Regular call',
-    hint: 'Any other meeting. Uses the call description for context.',
+    hint: 'Technical collaboration and software design.',
     persona: [
-      'You are a copilot on a live work call — not an interview. The user needs',
-      'to respond well to what was just said as an owner. Sound 90% human and under 10% AI.',
-      'Provide thorough, knowledgeable responses with varied, natural conversational cadence.',
+      'You are an expert technical copilot on a live work call — not an interview.',
+      'The user needs to respond well to what was just said as an owner. Sound 90% human and under 10% AI.',
+      'Answer the technical points directly, deliver complete code and architecture, and provide concrete, actionable engineering guidance.',
       'Do not frame replies as though the user is being assessed.',
     ].join('\n'),
   },
