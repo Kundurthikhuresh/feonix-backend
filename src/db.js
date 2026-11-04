@@ -1,7 +1,7 @@
 const dns = require('dns');
 const crypto = require('crypto');
 const tls = require('tls');
-const { MongoClient } = require('mongodb');
+const { MongoClient, GridFSBucket } = require('mongodb');
 
 // Node on Windows often fails mongodb+srv SRV lookups against the local DNS
 // resolver (querySrv ECONNREFUSED). Public resolvers still work.
@@ -279,6 +279,33 @@ class MemoryCollection {
 
 let connectPromise = null;
 
+// Database commands slower than this are logged (name, collection and time
+// only, never data), to show when the database is what a request waits on.
+const SLOW_DB_MS = Number(process.env.SLOW_DB_MS || 300);
+
+function logSlowCommands(mongoClient) {
+  const started = new Map(); // requestId → collection
+  mongoClient.on('commandStarted', (e) => {
+    const target = e.command && e.command[e.commandName];
+    started.set(e.requestId, typeof target === 'string' ? target : '-');
+  });
+  const finish = (e, failed) => {
+    const collection = started.get(e.requestId) || '-';
+    started.delete(e.requestId);
+    if (failed || e.duration >= SLOW_DB_MS) {
+      console.warn(`[DB ${failed ? 'FAILED' : 'SLOW'}] ${e.commandName} ${collection} ${Math.round(e.duration)}ms`
+        + (failed ? ` (${e.failure && e.failure.message})` : ''));
+    }
+  };
+  mongoClient.on('commandSucceeded', (e) => finish(e, false));
+  // A collection that does not exist yet (code 26) is normal on first use,
+  // e.g. GridFS checking for its indexes before the first file is stored.
+  mongoClient.on('commandFailed', (e) => {
+    if (e.failure && e.failure.code === 26) { started.delete(e.requestId); return; }
+    finish(e, true);
+  });
+}
+
 async function connect() {
   if (db) return db;
   if (connectPromise) return connectPromise;
@@ -302,15 +329,23 @@ async function connect() {
           serverSelectionTimeoutMS: CONNECT_TIMEOUT_MS,
           connectTimeoutMS: CONNECT_TIMEOUT_MS,
           maxPoolSize: 20,
-          minPoolSize: 2,
-          maxIdleTimeMS: 60000,
+          // Every new connection costs a DNS lookup and a TLS handshake
+          // (0.1-0.6 s here, many seconds on a bad connection). A copilot
+          // answer makes several reads at once, so keep enough connections
+          // open, and keep idle ones for 5 minutes instead of closing them
+          // after 1, so a question does not wait for new ones.
+          minPoolSize: 5,
+          maxIdleTimeMS: 5 * 60 * 1000,
           socketTimeoutMS: 45000,
+          monitorCommands: true,
         });
+        logSlowCommands(client);
+        const connectStarted = Date.now();
         await client.connect();
         db = client.db(process.env.MONGODB_DB || 'feonixai');
         // ~46 sequential Atlas round trips (~9s); awaiting it blocked every request after a restart.
         ensureIndexes().catch((err) => console.warn('ensureIndexes failed:', err.message));
-        console.log('Successfully connected to MongoDB Atlas.');
+        console.log(`Successfully connected to MongoDB Atlas in ${Date.now() - connectStarted}ms.`);
         return db;
       } catch (err) {
         console.warn(`⚠️ [DB Warning] MongoDB Atlas connection attempt ${attempt}/${CONNECT_ATTEMPTS} failed (${err.message}).`);
@@ -493,9 +528,17 @@ async function sessionTokensUsed(sessionId) {
   return rows[0] ? rows[0].total : 0;
 }
 
+/* Original uploaded files (resumes, job descriptions) live in GridFS, next
+ * to the extracted text in "documents". Null without a real database. */
+function fileBucket() {
+  if (!db || isFallback) return null;
+  return new GridFSBucket(db, { bucketName: 'document_files' });
+}
+
 module.exports = {
   connect,
   col,
+  fileBucket,
   isDbFallback: () => isFallback,
   nextId,
   nowSql,

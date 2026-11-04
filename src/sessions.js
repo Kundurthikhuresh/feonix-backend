@@ -52,7 +52,6 @@ async function enrichSession(session) {
       }
     }
   }
-  }
   const numId = Number(s.id);
   const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(s.id)] } : s.id;
   const [tokens_used, answer_count, line_count] = await Promise.all([
@@ -146,7 +145,8 @@ router.post('/', requireAuth, async (req, res, next) => {
   const company = String(b.company || '').trim();
   const role = String(b.role || '').trim();
   const jobDescription = String(b.job_description || '').trim().slice(0, 20000);
-  const language = String(b.language || 'English').slice(0, 40);
+  // English only: every session listens and answers in English.
+  const language = 'English';
   const autoAnswer = b.auto_answer === false ? 0 : 1;
   const context = String(b.context || '').trim().slice(0, 20000);
   const agent = String(b.agent || '').trim().slice(0, 60);
@@ -296,7 +296,7 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
       const remainingCredits = await credits.creditBalance(req.user.id);
       const trialRem = await credits.trialsRemaining(req.user.id);
       if (!isUnlimitedUser && remainingCredits <= 0 && trialRem <= 0) {
-        const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+        const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : (owned.max_minutes || 60);
         return res.status(410).json({
           error: 'session_expired',
           message: `This session has expired after ${limitMin} minutes. Please create a new session.`,
@@ -310,7 +310,7 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     if (owned.copilot_opened_at) {
       // Check if session has expired
       if (owned.expires_at && isExpired(owned.expires_at)) {
-        const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : 15;
+        const limitMin = (owned.billing_kind === 'trial' || owned.plan === 'free') ? (credits.TRIAL_MINUTES || 10) : (owned.max_minutes || 60);
         return res.status(410).json({
           error: 'session_expired',
           message: `This session has expired after ${limitMin} minutes. Please create a new session.`,
@@ -553,7 +553,7 @@ router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio')
         sessionContext: owned.context,
         mode: owned.mode,
         action: 'answer',
-        language: owned.language || 'English',
+        language: 'English',
       });
 
       const promptEstimate = Math.ceil(messages.map(m => m.content).join('\n').length / 4);
@@ -653,7 +653,7 @@ router.post('/:id/questions', requireAuth, answerLimiter, async (req, res, next)
       sessionContext: owned.context,
       mode: owned.mode,
       action: 'answer',
-      language: owned.language || 'English',
+      language: 'English',
     });
 
     const promptEstimate = Math.ceil(messages.map(m => m.content).join('\n').length / 4);

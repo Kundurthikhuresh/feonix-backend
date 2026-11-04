@@ -25,29 +25,29 @@ const { saveAnswer } = require('./history');
 const credits = require('./credits');
 const quota = require('./quota');
 
-// Measured first-token latency: gpt-4.1-mini ~0.7-1.0s vs gpt-4o-mini ~1.1-3s.
-const MODEL = process.env.ANSWER_MODEL || 'gpt-4.1-mini';
+// Interview answers are written by GPT-4o (OPENAI_MODEL); ANSWER_MODEL can
+// override it for answers only. Never falls back to a smaller model by itself.
+const MODEL = process.env.ANSWER_MODEL || process.env.OPENAI_MODEL || 'gpt-4o';
 
 /**
  * Models a session may choose. Only models this backend can actually reach are
  * listed — an unknown value falls back to the default rather than failing the
  * answer. `recommended` drives the label in the picker.
  */
-// Live answers (mic, chat, screenshot) must start within about a second, which
-// only gpt-4.1-mini manages; gpt-4o took 1.5-3s to its first word plus several
-// seconds to finish. So the live copilot offers and uses this one model only.
+// GPT-4o is the default and recommended answer model. The others stay
+// selectable per session for anyone who picks them explicitly.
 const AGENTS = [
-  { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini', recommended: true,
-    hint: 'Fastest first word (~1s). Best for live interviews.' },
+  { id: 'gpt-4o', label: 'GPT-4o', recommended: true,
+    hint: 'Most capable. Best answers for live interviews.' },
+  { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini',
+    hint: 'Fastest first word. Lighter answers.' },
   { id: 'gpt-4o-mini', label: 'GPT-4o mini',
-    hint: 'Low cost. First word in ~1-3s.' },
-  { id: 'gpt-4o', label: 'GPT-4o',
-    hint: 'Most capable, slowest to start (~2-4s).' },
+    hint: 'Low cost.' },
 ];
 const AGENT_IDS = new Set(AGENTS.map((a) => a.id));
 
 // The agent picked for the session; anything unknown (or none) gets the
-// fast default.
+// default answer model (MODEL).
 function modelFor(session) {
   const picked = String((session && session.agent) || '').trim();
   return AGENT_IDS.has(picked) ? picked : MODEL;
@@ -300,7 +300,6 @@ function buildMessages({
       'Deliver a comprehensive, directly relevant technical answer on THAT subject, providing full information and depth. Do not give a generic or disconnected answer.'
     );
   }
-  }
 
   let styleInstruction = '';
   if (isCoding && answerStyle !== 'teleprompter' && answerStyle !== 'quiz') {
@@ -463,7 +462,7 @@ router.post('/warm', requireAuthLive, async (req, res) => {
     images: [],
     mode: session && SESSION_TYPES[session.mode] ? session.mode : DEFAULT_TYPE,
     action: DEFAULT_ACTION,
-    language: (session && session.language) || 'English',
+    language: 'English',
   });
   const started = Date.now();
   try {
@@ -505,7 +504,8 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
   const mode = session && SESSION_TYPES[session.mode]
     ? session.mode
     : (SESSION_TYPES[req.body && req.body.mode] ? req.body.mode : DEFAULT_TYPE);
-  const language = (session && session.language) || 'English';
+  // English only, whatever an older session was created with.
+  const language = 'English';
 
   /* ---- session lifecycle gate ---------------------------------------
    *
@@ -527,8 +527,6 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
         await credits.settleSession(fresh);
       }
       return res.status(410).json({ error: 'session_ended', message: 'This session has ended or expired. Please start a new session.' });
-    }
-  }
     }
   }
 
@@ -634,6 +632,10 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
 
   const customKey = req.get('x-openai-api-key') || (req.body && req.body.apiKey) || (req.headers['authorization']?.startsWith('Bearer ') && req.headers['authorization'].slice(7).startsWith('sk-') ? req.headers['authorization'].slice(7) : null);
 
+  // Latency log: request received → model's first token → answer complete.
+  const tRequest = Date.now();
+  let tFirstToken = null;
+
   try {
     // One silent retry for a transient upstream failure, but only while nothing
     // has been streamed yet — after that a retry would duplicate visible text.
@@ -657,6 +659,10 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
           const delta = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
           const text = delta && delta.content;
           if (!text) continue;
+          if (tFirstToken === null) {
+            tFirstToken = Date.now();
+            console.info(`[ANSWER TIMING] model=${chosenModel} first token ${tFirstToken - tRequest}ms after request`);
+          }
 
           answerChars += text.length;
           const prevLen = replyText.length;
@@ -724,6 +730,9 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
       // Stream died before the usage chunk: prompt tokens were spent for sure.
       promptTokens = promptEstimate;
       outputTokens = tokensFromChars(answerChars);
+    }
+    if (tFirstToken !== null) {
+      console.info(`[ANSWER TIMING] model=${chosenModel} complete ${Date.now() - tRequest}ms, prompt ${promptTokens} tokens (cached ${(reportedUsage && reportedUsage.prompt_tokens_details && reportedUsage.prompt_tokens_details.cached_tokens) || 0}), output ${outputTokens} tokens`);
     }
     usageId = await usagePromise;
     await settleUsage(usageId, promptTokens, outputTokens);

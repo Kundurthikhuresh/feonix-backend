@@ -193,7 +193,11 @@ const CYRILLIC_REGEX = /[\u0400-\u04ff]/;
 const ARABIC_REGEX = /[\u0600-\u06ff]/;
 // Arabic/Urdu, Devanagari, Telugu, Tamil, Cyrillic or CJK letters in what
 // should be English: the words were written in the wrong script.
-const NON_LATIN_SCRIPT_REGEX = /[\u0600-\u06ff\u0750-\u077f\u0900-\u097f\u0c00-\u0c7f\u0b80-\u0bff\u0400-\u04ff\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/;
+// Scripts that are never English. \u0900-\u0dff covers every Indian script
+// (Devanagari, Bengali, Gurmukhi, Gujarati, Odia, Tamil, Telugu, Kannada,
+// Malayalam, Sinhala): Bengali was missing, so a misheard Bengali line got
+// through as a question.
+const NON_LATIN_SCRIPT_REGEX = /[\u0590-\u05ff\u0600-\u06ff\u0750-\u077f\u0900-\u0dff\u0e00-\u0e7f\u0400-\u04ff\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]/;
 const FALLBACK_MODEL = 'whisper-1';
 const CLIP_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS || 4000);
 const TINY_CLIP_BYTES = 8000;
@@ -286,8 +290,8 @@ function stripPromptEcho(text, prompt, sessionLang = 'en') {
 async function transcribeAudio(buffer, filename, contentType, session, customKey) {
   const file = await toFile(buffer, filename, { type: contentType || 'audio/webm' });
   const promptUsed = promptFor(session);
-  const sessionLang = String((session && session.language) || '').toLowerCase();
-  const langCode = LANGUAGE_CODES[sessionLang] || 'en';
+  // English only, whatever an older session was created with.
+  const langCode = 'en';
   // A clip normally comes back in about a second. Some requests hung for
   // 17-26s, so the question arrived long after it was asked and the browser
   // had already given up and re-sent the same clip. A stuck request is now
@@ -459,6 +463,11 @@ module.exports = {
   router,
   transcribeAudio,
   stripPromptEcho,
+  promptFor,
+  repairTechnicalAcoustics,
+  looksForeignLatin,
+  LANGUAGE_CODES,
+  NON_LATIN_SCRIPT_REGEX,
   transcribeLimiter,
   MODEL,
   RESERVE_TOKENS,

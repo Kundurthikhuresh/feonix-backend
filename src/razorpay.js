@@ -14,6 +14,7 @@ const { createNotification } = require('./notifications');
 const { sendSubscriptionEmail } = require('./mailer');
 const credits = require('./credits');
 const { evaluatePromotion } = require('./promotions');
+const { PLAN_PRICES, resolveCurrency, planPrice } = require('./pricing');
 
 const router = express.Router();
 
@@ -40,50 +41,49 @@ const PLAN_CONFIG = {
     name: 'Premium Plan',
   },
 
-  // Unlimited Subscriptions (halved prices)
+  // Unlimited subscriptions and credit packs. amountPaise is the INR price;
+  // the USD and GBP prices are in pricing.js.
   sub_weekly: {
-    amountPaise: 249000, // half price (~$39)
+    amountPaise: PLAN_PRICES.sub_weekly.INR,
     credits: 0,
     unlimited: true,
-    name: 'Weekly Unlimited ($39)',
+    name: 'Weekly Unlimited',
   },
   sub_monthly: {
-    amountPaise: 473500, // half price (~$74.95)
+    amountPaise: PLAN_PRICES.sub_monthly.INR,
     credits: 0,
     unlimited: true,
-    name: 'Monthly Unlimited ($74.95)',
+    name: 'Monthly Unlimited',
   },
   sub_yearly: {
-    amountPaise: 1895000, // half price (~$299.95)
+    amountPaise: PLAN_PRICES.sub_yearly.INR,
     credits: 0,
     unlimited: true,
-    name: 'Yearly Unlimited ($299.95)',
+    name: 'Yearly Unlimited',
   },
-
-  // Credit Packs (halved prices)
   pack_1: {
-    amountPaise: 118000, // half price
+    amountPaise: PLAN_PRICES.pack_1.INR,
     credits: 1,
     unlimited: false,
-    name: '1 Credit Pack ($19)',
+    name: '1 Credit Pack',
   },
   pack_3: {
-    amountPaise: 184500, // half price
+    amountPaise: PLAN_PRICES.pack_3.INR,
     credits: 3,
     unlimited: false,
-    name: '3 Credits Pack ($29.50)',
+    name: '3 Credits Pack',
   },
   pack_6: {
-    amountPaise: 369000, // half price
+    amountPaise: PLAN_PRICES.pack_6.INR,
     credits: 8, // 6 + 2 free
     unlimited: false,
-    name: '6 + 2 Credits Pack ($59)',
+    name: '8 Credits Pack (6 + 2 free)',
   },
   pack_9: {
-    amountPaise: 553500, // half price
+    amountPaise: PLAN_PRICES.pack_9.INR,
     credits: 15, // 9 + 6 free
     unlimited: false,
-    name: '9 + 6 Credits Pack ($88.50)',
+    name: '15 Credits Pack (9 + 6 free)',
   },
 };
 
@@ -110,7 +110,7 @@ async function grantPlanCredits(user, plan, paymentId, couponInfo = null) {
   // Grant base plan credits if any
   if (config.credits > 0) {
     await credits.grantCredits(user.id, config.credits, {
-      reason: `Razorpay ${config.name || plan.toUpperCase()} (${paymentId})`,
+      reason: `Razorpay ${config.name || plan.toUpperCase()} [${plan}] (${paymentId})`,
     });
   }
 
@@ -138,6 +138,7 @@ async function grantPlanCredits(user, plan, paymentId, couponInfo = null) {
         original_amount: Number(couponInfo.original_amount) || (config.amountPaise / 100),
         discount_amount: Number(couponInfo.discount_amount) || 0,
         final_amount: Number(couponInfo.final_amount) || (config.amountPaise / 100),
+        currency: couponInfo.currency || 'INR',
         bonus_credits: Number(couponInfo.bonus_credits) || 0,
         redeemed_at: nowSql(),
       });
@@ -165,6 +166,15 @@ async function grantPlanCredits(user, plan, paymentId, couponInfo = null) {
   sendSubscriptionEmail(user.email, plan).catch(console.error);
 }
 
+// Records the payment on its order, so admin revenue counts the amount and
+// currency actually charged.
+async function markOrderPaid(orderId, paymentId) {
+  await col('pending_orders').updateOne(
+    { order_id: orderId },
+    { $set: { status: 'completed', payment_id: paymentId, paid_at: nowSql() } }
+  );
+}
+
 // POST /api/razorpay/create-order
 router.post('/create-order', requireAuth, async (req, res, next) => {
   try {
@@ -182,7 +192,11 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'invalid_plan', message: 'Invalid plan selected.' });
     }
 
-    let payableAmountPaise = config.amountPaise;
+    // Amounts below are in the order currency's smallest unit (paise, cents
+    // or pence), despite the "Paise" names.
+    const price = planPrice(plan, resolveCurrency(req, req.body && req.body.currency), config.amountPaise);
+    const currency = price.currency;
+    let payableAmountPaise = price.amount;
     let promoEval = null;
 
     if (coupon_code) {
@@ -190,7 +204,8 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
         userId: req.user.id,
         userEmail: req.user.email,
         plan,
-        amountPaise: config.amountPaise,
+        amountPaise: price.amount,
+        currency,
       });
 
       if (!promoEval.valid) {
@@ -206,6 +221,7 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
     const orderNotes = {
       userId: String(req.user.id),
       plan,
+      currency,
     };
 
     if (promoEval) {
@@ -217,7 +233,7 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
 
     const order = await razorpay.orders.create({
       amount: payableAmountPaise,
-      currency: 'INR',
+      currency,
       receipt: `${plan}_${req.user.id}_${Date.now().toString(36)}`.slice(0, 40),
       notes: orderNotes,
     });
@@ -228,7 +244,8 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
       user_id: req.user.id,
       user_email: req.user.email,
       plan,
-      original_amount_paise: config.amountPaise,
+      currency,
+      original_amount_paise: price.amount,
       final_amount_paise: payableAmountPaise,
       coupon_code: promoEval ? promoEval.promotion.code : null,
       promotion_id: promoEval ? promoEval.promotion.id : null,
@@ -244,6 +261,8 @@ router.post('/create-order', requireAuth, async (req, res, next) => {
       currency: order.currency,
       key_id: process.env.RAZORPAY_KEY_ID,
       plan,
+      plan_name: config.name || plan,
+      original_amount: price.amount,
       applied_coupon: promoEval ? {
         code: promoEval.promotion.code,
         name: promoEval.promotion.name,
@@ -303,12 +322,14 @@ router.post('/verify-payment', requireAuth, async (req, res, next) => {
         original_amount: pendingOrder ? (pendingOrder.original_amount_paise / 100) : (PLAN_CONFIG[plan].amountPaise / 100),
         discount_amount: pendingOrder?.discount_amount || 0,
         final_amount: pendingOrder ? (pendingOrder.final_amount_paise / 100) : (PLAN_CONFIG[plan].amountPaise / 100),
+        currency: pendingOrder?.currency || 'INR',
         bonus_credits: pendingOrder?.bonus_credits || 0,
         order_id: orderId,
       };
     }
 
     await grantPlanCredits(user, plan, paymentId, couponInfo);
+    await markOrderPaid(orderId, paymentId);
 
     return res.json({
       success: true,
@@ -439,9 +460,12 @@ router.post(
                 promotion_id: notes.promotionId ? Number(notes.promotionId) : null,
                 bonus_credits: notes.bonusCredits ? Number(notes.bonusCredits) : 0,
                 discount_amount: notes.discountPaise ? (Number(notes.discountPaise) / 100) : 0,
+                final_amount: (Number(payment.amount) || 0) / 100,
+                currency: payment.currency || notes.currency || 'INR',
                 order_id: payment.order_id || null,
               } : null;
               await grantPlanCredits(user, plan, payment.id, couponInfo);
+              if (payment.order_id) await markOrderPaid(payment.order_id, payment.id);
             }
           }
         }
