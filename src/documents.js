@@ -1,5 +1,5 @@
 const express = require('express');
-const { col, nextId, nowSql, publicDoc } = require('./db');
+const { col, nextId, nowSql, publicDoc, fileBucket } = require('./db');
 const { requireAuth } = require('./auth');
 
 const KINDS = ['resume', 'job_description', 'company'];
@@ -72,7 +72,60 @@ async function activateDocument(userId, id, kind) {
   await col('documents').updateOne({ id, user_id: userId }, { $set: { is_active: 1 } });
 }
 
-async function saveDocument(userId, kind, filename, content, source = 'uploaded') {
+// The type an original file is served as comes from its extension, never from
+// what the uploader sent.
+const FILE_TYPES = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  txt: 'text/plain; charset=utf-8',
+};
+function fileTypeFor(filename) {
+  const ext = String(filename || '').toLowerCase().split('.').pop();
+  return FILE_TYPES[ext] || 'application/octet-stream';
+}
+
+/* Keeps the uploaded file itself, so it can be opened later (admin Resumes).
+ * A failure here never fails the upload: the text is what the copilot uses. */
+async function storeOriginal(documentId, userId, filename, buffer) {
+  const bucket = fileBucket();
+  if (!bucket || !Buffer.isBuffer(buffer) || !buffer.length) return;
+  try {
+    await new Promise((resolve, reject) => {
+      const upload = bucket.openUploadStream(filename, {
+        metadata: { document_id: documentId, user_id: userId, content_type: fileTypeFor(filename) },
+      });
+      upload.on('error', reject).on('finish', resolve);
+      upload.end(buffer);
+    });
+  } catch (err) {
+    console.warn(`[documents] original file not stored for document ${documentId}: ${err.message}`);
+  }
+}
+
+async function deleteOriginal(documentId) {
+  const bucket = fileBucket();
+  if (!bucket) return;
+  const files = await bucket.find({ 'metadata.document_id': documentId }).toArray();
+  await Promise.all(files.map((f) => bucket.delete(f._id).catch(() => {})));
+}
+
+/* The original file of a document: { stream, filename, contentType, length },
+ * or null when only its text was kept (uploads from before files were stored). */
+async function openOriginal(documentId) {
+  const bucket = fileBucket();
+  if (!bucket) return null;
+  const [file] = await bucket.find({ 'metadata.document_id': documentId }).sort({ uploadDate: -1 }).limit(1).toArray();
+  if (!file) return null;
+  return {
+    stream: bucket.openDownloadStream(file._id),
+    filename: file.filename,
+    contentType: fileTypeFor(file.filename),
+    length: file.length,
+  };
+}
+
+async function saveDocument(userId, kind, filename, content, source = 'uploaded', originalFile = null) {
   const id = await nextId('documents');
   const doc = {
     id,
@@ -85,6 +138,7 @@ async function saveDocument(userId, kind, filename, content, source = 'uploaded'
     created_at: nowSql(),
   };
   await col('documents').insertOne(doc);
+  if (originalFile) await storeOriginal(id, userId, filename, originalFile);
   const activeCount = await col('documents').countDocuments({ user_id: userId, kind, is_active: 1 });
   if (!activeCount) await activateDocument(userId, id, kind);
   return shapeDoc(await col('documents').findOne({ id }));
@@ -201,7 +255,7 @@ router.post(
           message: 'No readable text extracted from file. Please ensure the document is not a scanned image.',
         });
       }
-      const doc = await saveDocument(req.user.id, kind, filename, text);
+      const doc = await saveDocument(req.user.id, kind, filename, text, 'uploaded', Buffer.isBuffer(fileBuffer) ? fileBuffer : null);
       return res.status(200).json({ document: doc });
     } catch (err) {
       const status = err.status || 500;
@@ -221,6 +275,7 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
     }));
     if (!doc) return res.status(404).json({ error: 'not_found' });
     await col('documents').deleteOne({ id: doc.id });
+    await deleteOriginal(doc.id).catch((err) => console.warn(`[documents] original file not deleted for document ${doc.id}: ${err.message}`));
     if (doc.is_active) {
       const next = await col('documents')
         .find({ user_id: req.user.id, kind: doc.kind })
@@ -236,3 +291,4 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports.openOriginal = openOriginal;

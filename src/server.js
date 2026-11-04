@@ -29,6 +29,7 @@ const adminRouter = require('./admin');
 const { router: answerRouter } = require('./answer');
 const documentsRouter = require('./documents');
 const { router: transcribeRouter } = require('./transcribe');
+const { router: liveSttRouter, attachLiveStt } = require('./liveStt');
 const { router: historyRouter } = require('./history');
 const { router: sessionsRouter } = require('./sessions');
 const notesRouter = require('./notes');
@@ -145,6 +146,7 @@ app.use('/api/admin', adminRouter);
 app.use('/api/answer', answerRouter);
 app.use('/api/documents', documentsRouter);
 app.use('/api/transcribe', transcribeRouter);
+app.use('/api/live-stt', liveSttRouter);
 app.use('/api/history', historyRouter);
 app.use('/api/vision', visionRouter);
 app.use('/api/sessions', handoffRouter);
@@ -253,9 +255,10 @@ process.on('unhandledRejection', (reason) => {
 });
 
 async function start() {
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`feonixai api listening on http://localhost:${PORT}`);
   });
+  attachLiveStt(server);
   connect().catch((err) => {
     console.error('Initial MongoDB connection error:', err);
   });

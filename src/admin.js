@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const { col, nextId, nowSql, publicDoc } = require('./db');
 const credits = require('./credits');
 const { getPromotionStatus } = require('./promotions');
+const { toInr } = require('./pricing');
 const {
   requireAuth, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, normalizeEmail,
   BCRYPT_ROUNDS, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH,
@@ -841,6 +842,41 @@ router.get('/transcriptions', async (req, res, next) => {
 });
 
 // --------------------------------------------------------------------------
+// GET /api/admin/documents/:id/file - download a customer's uploaded file
+// exactly as they uploaded it (same bytes, same name), whatever its type.
+// Uploads from before original files were stored have no file to give.
+// --------------------------------------------------------------------------
+router.get('/documents/:id/file', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const doc = Number.isFinite(id) ? await col('documents').findOne({ id }) : null;
+    if (!doc) return res.status(404).json({ error: 'not_found', message: 'Document not found.' });
+    const original = await require('./documents').openOriginal(id);
+    if (!original) {
+      return res.status(404).json({
+        error: 'original_not_saved',
+        message: 'The original file was not saved for this upload (it was uploaded before file storage was added). Ask the customer to upload it again.',
+      });
+    }
+    // Always a download, never shown inside the site: an uploaded file can
+    // then never run in the admin page.
+    const name = String(original.filename || doc.filename || 'document');
+    const asciiName = name.replace(/[^\x20-\x7e]+/g, '_').replace(/["\\]/g, '_');
+    res.set({
+      'Content-Type': original.contentType,
+      'Content-Length': String(original.length),
+      'Content-Disposition': `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'private, no-store',
+    });
+    original.stream.on('error', next).pipe(res);
+    return undefined;
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// --------------------------------------------------------------------------
 // 12. GET /api/admin/documents - Resumes & Documents
 // --------------------------------------------------------------------------
 router.get('/documents', async (req, res, next) => {
@@ -861,6 +897,12 @@ router.get('/documents', async (req, res, next) => {
     ]);
 
     await primeUserEmails(rawDocs.map((d) => d.user_id));
+    // Which of these still have their original file (uploads before files
+    // were stored only have their text).
+    const withFile = new Set((await col('document_files.files')
+      .find({ 'metadata.document_id': { $in: rawDocs.map((d) => d.id) } }, { projection: { 'metadata.document_id': 1 } })
+      .toArray()
+      .catch(() => [])).map((f) => f.metadata.document_id));
     const docs = [];
     for (const d of rawDocs) {
       docs.push({
@@ -872,6 +914,7 @@ router.get('/documents', async (req, res, next) => {
         source: d.source || 'uploaded',
         is_active: Boolean(d.is_active),
         chars: String(d.content || '').length,
+        has_original: withFile.has(d.id),
         created_at: d.created_at,
       });
     }
@@ -1014,6 +1057,9 @@ const AI_MODEL_RATES = {
   'gpt-4': { prompt: 30.00, output: 60.00 },
   'whisper-1': { prompt: 0.50, output: 1.50, perMinuteUsd: 0.006 },
   'gpt-4o-mini-transcribe': { prompt: 0.15, output: 0.60 },
+  // Live transcription is billed per minute of audio ($0.017). Its usage rows
+  // store 600 tokens a minute (liveStt.js), so this is $0.017 / 600 per token.
+  'gpt-live-transcribe': { prompt: 28.33, output: 0 },
 };
 const USD_INR_CONVERSION_RATE = 84.00; // 1 USD = 84 INR standard conversion
 
@@ -1047,7 +1093,9 @@ function parsePlanAmount(reason = '', userPlan = null) {
 function calcAiUsageCost(model, promptTokens = 0, outputTokens = 0) {
   const m = String(model || 'gpt-4o-mini').toLowerCase();
   let rates = AI_MODEL_RATES['gpt-4o-mini'];
-  if (m.includes('transcribe')) {
+  if (m.includes('live-transcribe')) {
+    rates = AI_MODEL_RATES['gpt-live-transcribe'];
+  } else if (m.includes('transcribe')) {
     rates = AI_MODEL_RATES['gpt-4o-mini-transcribe'];
   } else if (m.includes('4.1-mini')) {
     rates = AI_MODEL_RATES['gpt-4.1-mini'];
@@ -1238,14 +1286,14 @@ async function buildAuditAnalytics(query) {
 
     // a. Redemptions
     for (const r of redemptions) {
-      const amt = Number(r.final_amount) || 0;
+      const amt = toInr((Number(r.final_amount) || 0) * 100, r.currency || 'INR');
       const key = r.payment_id || `redemption_${r.id}`;
       recordUserPayment(r.user_id, amt, key);
     }
 
     // b. Completed Orders
     for (const o of completedOrders) {
-      const amt = (Number(o.final_amount_paise) || 0) / 100;
+      const amt = toInr(o.final_amount_paise, o.currency || 'INR');
       const key = o.payment_id || o.order_id || `order_${o.id}`;
       recordUserPayment(o.user_id, amt, key);
     }

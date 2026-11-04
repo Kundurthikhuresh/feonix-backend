@@ -25,24 +25,22 @@ const OWNER_VOICE_RULE =
 // term of each in bold. Easy to glance at and read out mid-interview, where a
 // block of paragraphs is not.
 const ANSWER_SHAPE = [
-  'Write [ANSWER] in exactly this shape (markdown):',
-  'Line 1: ONE direct sentence that answers the question. Bold ONLY its key phrase (3 to 7 words), never the whole sentence. No heading, no "Answer:" label.',
-  'Then 4 to 6 bullet lines (never more than 6), each starting with "- ", each one or two complete sentences. EVERY bullet bolds its own key term or phrase (2 to 6 words).',
-  'Extra depth goes inside the bullets, not into more bullets. Nothing after the last bullet: no closing paragraph, no summary, no sub-headings.',
+  'Write [ANSWER] as a natural, cohesive, first-person spoken response in 1 to 2 clear paragraphs.',
+  'Speak directly in confident, natural conversational English as the candidate ("In my daily routine...", "I start by...", "I usually handle...", "In my experience...", "I implemented...").',
+  'STRICT RULES FOR [ANSWER]:',
+  '- ZERO BULLET POINTS: Do NOT use bullet points ("-", "•", "*") or numbered lists.',
+  '- ZERO MARKDOWN BOLD OR UNDERLINES: Do NOT use asterisks ("**word**") or formatting marks.',
+  '- Deliver a single, fluent narrative that flows smoothly when read aloud or spoken in an interview.',
   '',
-  'Example of the shape (for a different question, "What is Python?"):',
-  'Python is a **high-level, interpreted programming language** used to build many kinds of software.',
-  '- It is known for **simple, readable syntax**, so code reads almost like plain English and teams can maintain it easily.',
-  '- Python is **dynamically typed**, which means variable types are checked at runtime, making it quick to prototype.',
-  '- It ships with a huge **standard library** and ecosystem, like Django for web apps and Pandas for data work.',
-  '- I have used it for **automation scripts and backend APIs**, where its fast development speed really helped.',
+  'Example of the shape:',
+  'In my daily routine, I start by checking the status of our data pipelines to ensure everything is running smoothly. I monitor ETL jobs and data quality metrics, collaborating with teams to address any issues. I also spend time developing and optimizing data models, and implementing governance and security measures to ensure compliance and data integrity.',
 ].join('\n');
 
 const CODING_ANSWER_SHAPE = [
-  'Write [ANSWER] in exactly this shape (markdown):',
-  'Line 1: ONE direct sentence saying what the solution does, with the key idea in **bold**.',
-  'Then the complete runnable code in one fenced code block.',
-  'Then 4 to 6 bullet lines, each starting with "- ", explaining the approach, the logic, the **Time and Space complexity** and the edge cases, with the key term of each bullet in **bold**.',
+  'Write [ANSWER] in this shape:',
+  'Line 1: ONE direct sentence explaining the approach.',
+  'Then the complete runnable code in one fenced code block (\`\`\`<language> ... \`\`\`).',
+  'Then 1 or 2 concise paragraphs explaining the algorithmic approach, Time & Space complexity, and edge cases handled (in natural sentences, without bullet lists).',
 ].join('\n');
 
 function formatBlock(lengthRule, pointsRule, isCoding = false) {
@@ -493,10 +491,8 @@ function catalogue() {
       hint: t.hint,
     })),
     actions: Object.entries(ACTIONS).map(([key, a]) => ({ key, label: a.label })),
-    languages: [
-      'English', 'Spanish', 'French', 'German', 'Portuguese',
-      'Hindi', 'Telugu', 'Tamil', 'Mandarin', 'Japanese', 'Arabic',
-    ],
+    // The copilot hears, transcribes and answers in English only.
+    languages: ['English'],
     default_type: DEFAULT_TYPE,
   };
 }
