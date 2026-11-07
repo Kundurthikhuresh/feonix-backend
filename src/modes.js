@@ -209,23 +209,23 @@ function classifyQuestion(question) {
  */
 const TYPE_LENGTH_RULES = {
   CODING:
-    'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with 8 to 12 substantive spoken sentences explaining the algorithmic approach, intuition, step-by-step logic, Big-O Time & Space complexity, edge case handling, and production trade-offs with 90% human thinking and under 10% AI precision.',
+    'Deliver a production-grade response featuring the COMPLETE, 100% WORKING CODE first in standard markdown code block(s) (```<language> ... ```) with zero placeholders, zero "// TODO" comments, and full implementation of all classes, methods, and logic. Follow with 4 to 5 natural spoken sentences walking the interviewer through the approach, the intuition, Big-O time and space complexity, and the key edge case, the way I would explain my own code out loud.',
   YES_NO:
-    'State a direct, confident answer upfront, followed by 6 to 9 detailed conversational sentences explaining the technical reasoning, real-world production experience, design decisions, and concrete outcomes.',
+    'State the direct answer first, then the reasoning, in 4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer.',
   SHORT_DIRECT:
-    '6 to 10 comprehensive spoken sentences explaining the core concept, practical mechanisms under the hood, hands-on production setup, and critical trade-offs with 90% human thinking and deep technical clarity.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer: what it is, how it works, and where I would use it or not.',
   EXPERIENCE:
-    '8 to 14 rich conversational sentences detailing hands-on architectural experience: the tech stack and tools chosen, system design decisions, challenges resolved in production, performance optimizations, and measurable impact.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer: what I worked on, the key decision I made and why, and how it turned out.',
   BEHAVIORAL:
-    '8 to 14 structured STAR sentences with deep substance: the specific high-stakes Situation and Task, the architectural & technical Action taken, and the measurable Result with real metrics, lessons learned, and trade-offs. Sound 90% human and conversational.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer, following the situation, what I did, and the result, told as a story rather than a template.',
   TECHNICAL:
-    '8 to 14 comprehensive spoken sentences delivering deep technical information: how the concept works under the hood, architectural patterns, hands-on implementation details from real systems, performance considerations, and key trade-offs without generic AI fluff.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer: the direct answer, how it works under the hood, and the one trade-off that matters in practice.',
   SCENARIO:
-    '8 to 14 thorough conversational sentences detailing the step-by-step engineering approach: triage and diagnostics, root cause analysis, architecture decisions, execution plan, rollback/mitigation strategies, and post-incident hardening.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer: how I would first find the cause, what I would change, and how I would make sure it does not happen again.',
   MOTIVATION:
-    '6 to 10 authentic sentences connecting hands-on technical background and engineering values with the company\'s specific technical scale, architecture, and engineering challenges.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer, connecting my own background to this company and role.',
   CLARIFICATION:
-    '5 to 8 crystal-clear, informative spoken sentences clarifying the technical concept thoroughly, explaining under-the-hood mechanics and practical distinctions.',
+    '4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer, clarifying the point plainly.',
   OPEN_ENDED: null,   // falls back to DEFAULT_LENGTH_RULE
 };
 
@@ -241,7 +241,7 @@ function pointsRuleFor(type) {
 }
 
 const DEFAULT_LENGTH_RULE =
-  'What to say out loud: Deliver 8 to 14 comprehensive, authentic spoken sentences packed with rich technical information, under-the-hood mechanics, real production experience, and practical trade-offs. Sound 90% like natural human thinking and under 10% AI generated.';
+  'What to say out loud: 4 to 5 natural spoken sentences, the way I would actually think it through and say it to the interviewer. Start with the direct answer, then the reasoning and one concrete detail.';
 
 /**
  * Parses user numeric line requests (e.g. "answer in 5 lines", "give 6 lines").
@@ -327,8 +327,8 @@ function groundingBlock(resume, jobDescription) {
 
 const SHARED_RULES = [
   'Rules:',
-  '- UNDER 10% AI GENERATED OUTPUT, 90% HUMAN THINKING: The output must sound 90% like authentic human interview thinking and under 10% AI generated. Strictly avoid robotic AI transitions ("furthermore", "additionally", "in conclusion", "it is worth noting", "it is vital to understand"), and textbook boilerplate. The answer is laid out as one bold opening sentence plus bullets (see the format below), but each bullet still reads like something a person would say. Talk like an articulate, seasoned engineer speaking directly and thoughtfully in an interview room.',
-  '- MORE SENTENCES & HIGH TECHNICAL DEPTH: Deliver thorough, informative, and detailed answers (8 to 14+ substantive sentences under [ANSWER] and 4 to 6 rich speaking beats under [POINTS]). Provide deep technical value: explain under-the-hood mechanisms, real architectural designs, performance optimization, and trade-offs. Never give shallow 2-3 line summaries.',
+  '- UNDER 10% AI GENERATED OUTPUT, 90% HUMAN THINKING: The output must sound 90% like authentic human interview thinking and under 10% AI generated. Strictly avoid robotic AI transitions ("furthermore", "additionally", "in conclusion", "it is worth noting", "it is vital to understand"), and textbook boilerplate. The answer is one short spoken paragraph (see the format below). Talk like an articulate, seasoned engineer speaking directly and thoughtfully in an interview room.',
+  '- LENGTH & THINKING: 4 to 5 natural spoken sentences under [ANSWER], the way a person thinks it through out loud in an interview: the direct answer first, then the why and how with one concrete detail. Technically correct and specific, never a textbook essay or a list.',
   `- ${OWNER_VOICE_RULE}`,
   '- ANSWER LIKE AN OWNER, NOT A BOT: You are the candidate and the direct owner of the architecture, code, and systems. Speak with authentic ownership and conviction. NEVER speak as an AI bot, assistant, or third person (never say "As an AI", "Here is an answer", "You should mention").',
   '- CONTEXTUAL QUESTION RELEVANCE & RESOLUTION: You have been listening to the whole call, not just the last word. When the question is short, ambiguous, a fragment (e.g., "What?", "Why?", "How?", "Can you explain?"), or says "that", "this", "it", inspect the recent conversation transcript to determine the exact subject being discussed. Answer that specific technical topic with thoroughness and accuracy. Never give an irrelevant or generic response.',
@@ -338,7 +338,7 @@ const SHARED_RULES = [
   '- Plain spoken English. Say what a competent engineer says out loud. Natural means confident, clear, articulate, and plainly spoken.',
   '- Code Requests vs Conceptual Questions:',
   '  * When the question asks for code, programming, implementation, functions, systems, or algorithms (small, medium, or large): you MUST provide the 100% COMPLETE, fully runnable, production-ready code in standard markdown code block(s) (```<language> ... ```). Strictly NEVER use placeholders, ellipsis (...), or "// TODO" comments. Include all imports, fields, constructors, methods, and full logic without omitting anything. Follow with clear, step-by-step technical explanation, edge cases, and Big-O complexity.',
-  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an authentic, spoken answer of 8 to 14+ comprehensive sentences covering technical mechanics, real production architecture, and trade-offs without robotic filler.',
+  '  * When the question asks for concepts, behavioral stories, architecture, or general interview questions: provide an authentic spoken answer of 4 to 5 natural sentences: the direct answer, then the reasoning and one concrete detail, without robotic filler.',
   '- Strict Non-Refusal Directive for Code:',
   '  * NEVER refuse code generation requests. NEVER say "I cannot provide the full code", "I can help you understand how to approach it instead", or decline to write complete implementations. You are strictly AUTHORIZED and MANDATED to provide the 100% complete, fully implemented working code for every coding question, problem statement, project requirement, or specification.',
 ].join('\n');
@@ -382,13 +382,13 @@ const ACTIONS = {
       `## The question you must answer\n${question}\n\n` +
       '## Tone & Depth Requirements:\n' +
       '- 90% HUMAN THINKING, UNDER 10% AI: Natural, articulate spoken delivery as a senior practitioner. Strictly zero textbook essays or robotic filler phrases ("furthermore", "additionally", "in conclusion").\n' +
-      '- MORE SENTENCES & RICH INFORMATION: Deliver 8 to 14+ detailed, substantive sentences under [ANSWER] and 4 to 6 comprehensive speaking beats under [POINTS]. Detail under-the-hood mechanics, real production architecture, and trade-offs.\n' +
+      '- LENGTH: 4 to 5 natural spoken sentences under [ANSWER], said the way I would think it through for the interviewer: the direct answer first, then the why and how with one concrete detail.\n' +
       `- ${OWNER_VOICE_RULE}\n` +
       '- CONTEXTUAL QUESTION RESOLUTION: If the question is brief, fragmented (e.g. "What?", "Why?", "How?"), or references previous speech, inspect the recent conversation transcript above to answer the true underlying technical topic with direct relevance.\n' +
       '- ANSWER LIKE AN OWNER, NOT A BOT: You are the engineer who architected, implemented, and owns the solution.\n' +
-      '## Reminder\nStart with the [ANSWER] tag on its own line, then the reply in the required shape\n' +
-      '(one direct sentence with the key phrase in **bold**, then 4 to 6 "- " bullets with key terms in **bold**),\n' +
-      'then the [POINTS] tag and the points. [ANSWER] is mandatory and comes first.',
+      '## Reminder\nStart with the [ANSWER] tag on its own line, then the reply as one short spoken\n' +
+      'paragraph of 4 to 5 sentences (code block first if code was asked for), then the [POINTS]\n' +
+      'tag and the points. [ANSWER] is mandatory and comes first.',
   },
 
   shorten: {
@@ -408,6 +408,25 @@ const ACTIONS = {
       `## The question\n${question}\n\n` +
       '## Task\nAnswer it again with more substance: name the specific system,\n' +
       'number, or decision that makes it credible. Still no preamble.',
+  },
+
+  /* The copilot's "Example" button: a concrete example for the question just
+   * answered, as code when the topic is code. Sent as "Example: <question>". */
+  example: {
+    label: 'Example',
+    usesFormat: true,
+    instruction: (question) =>
+      `## The question I just answered\n${String(question || '').replace(/^example:\s*/i, '')}\n\n` +
+      '## Task\nGive the interviewer a concrete example that shows this answer in practice,\n' +
+      'spoken as me, the candidate ("For example, in one service I...", "Say we have...").\n' +
+      '- If the topic is programming (a language feature, code, an algorithm, a data structure,\n' +
+      '  an API, SQL): give a short, complete, runnable code example in a markdown code block\n' +
+      '  first, then 2 to 3 short spoken sentences on what the code shows.\n' +
+      '- Otherwise: describe one realistic scenario in 4 to 5 natural spoken sentences: the\n' +
+      '  situation, what I did and why, and how it turned out.\n' +
+      'Stay on exactly this topic. Never invent company names, dates or metrics.\n' +
+      '## Reminder\nStart with the [ANSWER] tag on its own line, then the example, then the\n' +
+      '[POINTS] tag and 2 to 3 short points. [ANSWER] is mandatory and comes first.',
   },
 
   recap: {

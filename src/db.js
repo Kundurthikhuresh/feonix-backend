@@ -535,7 +535,21 @@ function fileBucket() {
   return new GridFSBucket(db, { bucketName: 'document_files' });
 }
 
+/* tokensUsedThisMonth() for many users in one aggregation. Map(id -> total). */
+async function tokensUsedThisMonthMany(userIds) {
+  const ids = (userIds || []).filter((id) => id !== undefined && id !== null);
+  const out = new Map(ids.map((id) => [id, 0]));
+  if (!ids.length) return out;
+  const rows = await col('usage').aggregate([
+    { $match: { user_id: { $in: ids }, created_at: { $gte: startOfMonthSql() } } },
+    { $group: { _id: '$user_id', total: { $sum: { $add: ['$prompt_tokens', '$output_tokens'] } } } },
+  ]).toArray();
+  rows.forEach((r) => out.set(r._id, r.total || 0));
+  return out;
+}
+
 module.exports = {
+  tokensUsedThisMonthMany,
   connect,
   col,
   fileBucket,

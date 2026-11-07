@@ -308,7 +308,71 @@ async function accountSummary(userId) {
   };
 }
 
+/**
+ * accountSummary() for many users at once: the same figures, from two
+ * aggregations over all of them instead of about eight queries per user (the
+ * admin Users list took 2-3 s for 16 users). `users` are user documents, so
+ * the unlimited flag needs no further lookup. Returns Map(userId -> summary).
+ */
+async function accountSummaries(users) {
+  const list = (users || []).filter((u) => u && u.id !== undefined);
+  const ids = list.map((u) => u.id);
+  const byUser = new Map(ids.map((id) => [id, { trialUsed: 0, trialGranted: 0, bal: 0, granted: 0, consumed: 0 }]));
+  if (ids.length) {
+    const [trialRows, creditRows] = await Promise.all([
+      col('trial_transactions').aggregate([
+        { $match: { user_id: { $in: ids }, type: { $in: ['TRIAL_CONSUMED', 'TRIAL_GRANTED'] } } },
+        {
+          $group: {
+            _id: '$user_id',
+            used: { $sum: { $cond: [{ $eq: ['$type', 'TRIAL_CONSUMED'] }, { $abs: '$amount' }, 0] } },
+            granted: { $sum: { $cond: [{ $eq: ['$type', 'TRIAL_GRANTED'] }, '$amount', 0] } },
+          },
+        },
+      ]).toArray(),
+      col('credit_transactions').aggregate([
+        { $match: { user_id: { $in: ids } } },
+        {
+          $group: {
+            _id: '$user_id',
+            bal: { $sum: '$amount' },
+            granted: { $sum: { $cond: [{ $gt: ['$amount', 0] }, '$amount', 0] } },
+            consumed: { $sum: { $cond: [{ $eq: ['$type', 'CONSUME'] }, { $abs: '$amount' }, 0] } },
+          },
+        },
+      ]).toArray(),
+    ]);
+    trialRows.forEach((r) => {
+      const t = byUser.get(r._id);
+      if (t) { t.trialUsed = Number(r.used) || 0; t.trialGranted = Number(r.granted) || 0; }
+    });
+    creditRows.forEach((r) => {
+      const t = byUser.get(r._id);
+      if (t) { t.bal = Number(r.bal) || 0; t.granted = Number(r.granted) || 0; t.consumed = Number(r.consumed) || 0; }
+    });
+  }
+  const out = new Map();
+  list.forEach((u) => {
+    const t = byUser.get(u.id);
+    const unlimited = Boolean(u.unlimited_sessions === true);
+    const paidBal = round2(Math.max(0, t.bal));
+    out.set(u.id, {
+      unlimited,
+      credits: paidBal,
+      credits_granted: round2(t.granted),
+      credits_used: round2(t.consumed),
+      entitlement_minutes: unlimited ? UNLIMITED_MINUTES : Math.round(paidBal * 60),
+      trials_total: DEFAULT_FREE_TRIALS,
+      trials_used: t.trialUsed,
+      trials_remaining: Math.max(0, Math.floor(DEFAULT_FREE_TRIALS + t.trialGranted - t.trialUsed)),
+      trial_minutes: TRIAL_MINUTES,
+    });
+  });
+  return out;
+}
+
 module.exports = {
+  accountSummaries,
   DEFAULT_FREE_TRIALS,
   UNLIMITED_MINUTES,
   TRIAL_MINUTES,

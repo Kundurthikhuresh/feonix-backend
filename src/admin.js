@@ -1,12 +1,12 @@
 require('dotenv').config();
 const express = require('express');
 const bcrypt = require('bcrypt');
-const { col, nextId, nowSql, publicDoc } = require('./db');
+const { col, nextId, nowSql, publicDoc, tokensUsedThisMonthMany } = require('./db');
 const credits = require('./credits');
 const { getPromotionStatus } = require('./promotions');
 const { toInr } = require('./pricing');
 const {
-  requireAuth, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, normalizeEmail,
+  requireAuth, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, publicUserFrom, normalizeEmail,
   BCRYPT_ROUNDS, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH,
 } = require('./auth');
 const { destroyUserSessions } = require('./session-store');
@@ -86,6 +86,51 @@ router.get('/overview', async (req, res, next) => {
     }
     const startSql = startDate.toISOString().replace('T', ' ').slice(0, 19);
 
+    // Every query of this overview is independent: they all start now and are
+    // awaited where used, instead of six rounds one after another (2-7 s over
+    // the network). Each also gets a no-op catch so one failing before it is
+    // awaited cannot become an unhandled rejection; the await still throws.
+    const firstDayKey = new Date(now.getTime() - ((range === '7d' ? 7 : 14) - 1) * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const byDayEarly = [
+      { $match: { created_at: { $gte: firstDayKey } } },
+      { $project: { day: { $substr: ['$created_at', 0, 10] } } },
+      { $group: { _id: '$day', count: { $sum: 1 } } },
+    ];
+    const pTranscriptions = Promise.all([
+      col('transcript_lines').countDocuments(),
+      col('transcript_lines').countDocuments({ created_at: { $gte: startSql } }),
+    ]);
+    const pCreditsKpi = Promise.all([
+      col('trial_transactions').aggregate([
+        { $match: { type: 'TRIAL_CONSUMED' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).toArray(),
+      col('credit_transactions').aggregate([
+        { $match: { type: 'CONSUME' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).toArray(),
+      col('users').find({}, { projection: { id: 1 } }).toArray(),
+      // Every user's credit balance in one aggregation (was one query per user).
+      col('credit_transactions').aggregate([
+        { $group: { _id: '$user_id', bal: { $sum: '$amount' } } },
+      ]).toArray(),
+    ]);
+    const pDaily = Promise.all([
+      col('answers').aggregate(byDayEarly).toArray(),
+      col('transcript_lines').aggregate(byDayEarly).toArray(),
+      col('usage').aggregate(byDayEarly).toArray(),
+      col('usage').countDocuments(),
+      col('answers').countDocuments(),
+    ]);
+    const pRecent = Promise.all([
+      col('answers').find({}).sort({ _id: -1 }).limit(8).toArray(),
+      col('call_sessions').find({}).sort({ _id: -1 }).limit(8).toArray(),
+      col('documents').find({}).sort({ _id: -1 }).limit(8).toArray(),
+      col('users').find({}).sort({ _id: -1 }).limit(5).toArray(),
+    ]);
+    [pTranscriptions, pCreditsKpi, pDaily, pRecent].forEach((pending) => pending.catch(() => {}));
+
     // 1. Total Users KPI
     const [totalUsers, newUsersPeriod, activeUsers, disabledUsers] = await Promise.all([
       col('users').countDocuments(),
@@ -110,33 +155,22 @@ router.get('/overview', async (req, res, next) => {
     ]);
 
     // 3. Transcriptions KPI
-    const [totalTranscriptions, newTranscriptionsPeriod] = await Promise.all([
-      col('transcript_lines').countDocuments(),
-      col('transcript_lines').countDocuments({ created_at: { $gte: startSql } }),
-    ]);
+    const [totalTranscriptions, newTranscriptionsPeriod] = await pTranscriptions;
 
     // 4. Credits Consumed KPI
-    const [trialConsumedAgg, creditConsumedAgg, allUsers] = await Promise.all([
-      col('trial_transactions').aggregate([
-        { $match: { type: 'TRIAL_CONSUMED' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
-      ]).toArray(),
-      col('credit_transactions').aggregate([
-        { $match: { type: 'CONSUME' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
-      ]).toArray(),
-      col('users').find({}, { projection: { id: 1 } }).toArray(),
-    ]);
+    const [trialConsumedAgg, creditConsumedAgg, allUsers, balanceRows] = await pCreditsKpi;
 
     const totalTrialsUsed = trialConsumedAgg[0] ? Math.abs(trialConsumedAgg[0].total) : 0;
     const totalCreditsUsed = creditConsumedAgg[0] ? Math.abs(creditConsumedAgg[0].total) : 0;
     const creditsConsumed = Math.round(totalCreditsUsed * 10) / 10;
     const trialsConsumed = Math.round(totalTrialsUsed);
 
-    // Remaining allocation across all users — fetched in parallel, not one
-    // user after another.
-    const balances = await Promise.all(allUsers.map((u) => credits.creditBalance(u.id).catch(() => 0)));
-    let totalCreditsRemaining = balances.reduce((n, b) => n + (Number(b) || 0), 0);
+    // Remaining allocation across existing users: each balance as
+    // credits.creditBalance() gives it (never below 0, two decimals).
+    const existingUserIds = new Set(allUsers.map((u) => u.id));
+    let totalCreditsRemaining = balanceRows
+      .filter((r) => existingUserIds.has(r._id))
+      .reduce((n, r) => n + Math.round(Math.max(0, Number(r.bal) || 0) * 100) / 100, 0);
     totalCreditsRemaining = Math.round(totalCreditsRemaining * 10) / 10;
     const totalAllocation = creditsConsumed + totalCreditsRemaining;
     const creditPercent = totalAllocation > 0 ? Math.min(100, Math.round((creditsConsumed / totalAllocation) * 100)) : 0;
@@ -172,18 +206,7 @@ router.get('/overview', async (req, res, next) => {
 
     // Daily answers / transcription lines / usage rows, plus the all-time
     // totals — independent queries, so they run together.
-    const byDay = [
-      { $match: { created_at: { $gte: dateBuckets[0].key } } },
-      { $project: { day: { $substr: ['$created_at', 0, 10] } } },
-      { $group: { _id: '$day', count: { $sum: 1 } } },
-    ];
-    const [answersAgg, transAgg, visionAgg, totalAiRequests, totalAnswers] = await Promise.all([
-      col('answers').aggregate(byDay).toArray(),
-      col('transcript_lines').aggregate(byDay).toArray(),
-      col('usage').aggregate(byDay).toArray(),
-      col('usage').countDocuments(),
-      col('answers').countDocuments(),
-    ]);
+    const [answersAgg, transAgg, visionAgg, totalAiRequests, totalAnswers] = await pDaily;
 
     answersAgg.forEach((r) => {
       if (bucketMap.has(r._id)) {
@@ -211,12 +234,7 @@ router.get('/overview', async (req, res, next) => {
     const platformActivityTotal = totalAiRequests > 0 ? totalAiRequests : (totalAnswers + totalTranscriptions);
 
     // 8. Recent Activities Table
-    const [recentAnswers, recentSessionsList, recentDocs, recentUsersList] = await Promise.all([
-      col('answers').find({}).sort({ _id: -1 }).limit(8).toArray(),
-      col('call_sessions').find({}).sort({ _id: -1 }).limit(8).toArray(),
-      col('documents').find({}).sort({ _id: -1 }).limit(8).toArray(),
-      col('users').find({}).sort({ _id: -1 }).limit(5).toArray(),
-    ]);
+    const [recentAnswers, recentSessionsList, recentDocs, recentUsersList] = await pRecent;
     await primeUserEmails([...recentAnswers, ...recentSessionsList, ...recentDocs].map((r) => r.user_id));
 
     const activityList = [];
@@ -358,21 +376,33 @@ router.get('/users', async (req, res, next) => {
       col('users').find(query).sort({ id: -1 }).skip(skip).limit(limitNum).toArray(),
     ]);
 
-    // Each user's figures are independent, so they are fetched in parallel —
-    // one after another this took ~2 round trips per user in sequence.
-    const users = await Promise.all(rawUsers.map(async (u) => {
-      const [usageAgg, account, pub] = await Promise.all([col('call_sessions').aggregate([
-        { $match: { user_id: u.id, started_at: { $ne: null } } },
+    // All users on the page at once: one aggregation each for sessions,
+    // credits/trials and token usage. Per user this was about 18 round trips
+    // (the account summary was even computed twice), 2-3 s for 16 users.
+    const pageIds = rawUsers.map((u) => u.id);
+    const [sessionRows, summaries, tokensByUser] = await Promise.all([
+      col('call_sessions').aggregate([
+        { $match: { user_id: { $in: pageIds }, started_at: { $ne: null } } },
         {
           $group: {
-            _id: null,
+            _id: '$user_id',
             sessions: { $sum: 1 },
             paid_sessions: { $sum: { $cond: [{ $eq: ['$billing_kind', 'paid'] }, 1, 0] } },
             trial_sessions: { $sum: { $cond: [{ $eq: ['$billing_kind', 'paid'] }, 0, 1] } },
             last_session: { $max: '$started_at' },
           },
         },
-      ]).toArray(), credits.accountSummary(u.id), publicUser(u)]);
+      ]).toArray(),
+      credits.accountSummaries(rawUsers),
+      tokensUsedThisMonthMany(pageIds),
+    ]);
+    const sessionsByUser = new Map(sessionRows.map((r) => [r._id, r]));
+
+    const users = rawUsers.map((u) => {
+      const sessionAgg = sessionsByUser.get(u.id);
+      const usageAgg = sessionAgg ? [{ ...sessionAgg, _id: null }] : [];
+      const account = summaries.get(u.id);
+      const pub = publicUserFrom(u, tokensByUser.get(u.id) || 0, account);
 
       const safeCredits = typeof account.credits === 'number' && !isNaN(account.credits) ? account.credits : 0;
       const safeTrials = typeof account.trials_remaining === 'number' && !isNaN(account.trials_remaining) ? account.trials_remaining : 0;
@@ -391,7 +421,7 @@ router.get('/users', async (req, res, next) => {
         sessions_count: sessionsCount,
         usage: usageAgg[0] || { sessions: 0, paid_sessions: 0, trial_sessions: 0, last_session: null },
       };
-    }));
+    });
 
     res.json({
       users,

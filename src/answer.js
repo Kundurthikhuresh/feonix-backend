@@ -305,31 +305,40 @@ function buildMessages({
   if (isCoding && answerStyle !== 'teleprompter' && answerStyle !== 'quiz') {
     styleInstruction = '\n## Format: Clean Code Solution & Spoken Walkthrough (Under 10% AI, 90% Human Thinking, Owner Voice)\n' +
       '1. Working Code: Provide complete, clean, runnable code inside a standard markdown code block (```<language>\\n...code...\\n```).\n' +
-      '2. Owner Walkthrough: Provide 8 to 12 substantive spoken sentences as the owner explaining the algorithmic approach, intuition, step-by-step logic, Big-O Time & Space complexity, and edge case handling with natural conversational flow.\n' +
+      '2. Owner Walkthrough: 4 to 5 natural spoken sentences, as I would explain my own code to the interviewer: the approach, the intuition, Big-O time and space complexity, and the key edge case.\n' +
       '3. TONE & DEPTH: Under 10% AI, 90% human thinking. Answer like the senior owner with deep technical substance, varied natural phrasing, and zero robotic filler.';
   } else if (answerStyle === 'star' && isBehavioral) {
     styleInstruction = '\n## Format: Spoken STAR Method (Under 10% AI, 90% Human Thinking, Owner Voice)\n' +
-      'Deliver an authentic, detailed STAR response in 8 to 12 spoken sentences detailing the high-stakes Situation and Task, the technical and architectural Action taken, and the measurable Result with real metrics, trade-offs, and lessons learned. Speak naturally as the owner with varied phrasing and zero robotic AI fluff.';
+      'Tell it as a short story in 4 to 5 natural spoken sentences: the situation, what I did and why, and how it turned out. Speak naturally as the owner, with zero robotic AI fluff.';
   } else if (answerStyle === 'code') {
     styleInstruction = '\n## Format: Clean Code Solution & Spoken Walkthrough (Under 10% AI, 90% Human Thinking, Owner Voice)\n' +
-      'Provide clean, production-ready code in a markdown block (```<language>\\n...code...\\n```), followed by 8 to 12 substantive spoken sentences explaining the algorithmic approach, Big-O Time/Space complexity, trade-offs, and production edge cases with natural conversational authority.';
+      'Provide clean, production-ready code in a markdown block (```<language>\\n...code...\\n```), followed by 4 to 5 natural spoken sentences explaining the approach, Big-O time and space complexity, and the key edge case, as I would say it to the interviewer.';
   } else if (answerStyle === 'teleprompter') {
     styleInstruction = '\n## Format: Spoken Teleprompter Hints (Under 10% AI, 90% Human Thinking, Owner Voice)\n' +
-      'Provide 4-6 substantive speaking beats under [POINTS] and 8 to 12 rich spoken sentences under [ANSWER] packed with technical depth, architecture, and practical lessons in an authentic owner voice.';
+      'Provide 4-6 short speaking beats under [POINTS] and 4 to 5 natural spoken sentences under [ANSWER] in an authentic owner voice.';
   } else if (answerStyle === 'quiz') {
     styleInstruction = '\n## Format: Multiple Choice Answer (Under 10% AI, 90% Human Thinking)\n' +
       'State the correct Option/Letter first in bold, followed by a thorough 4 to 6 sentence technical explanation explaining why it is correct, why the alternative options fail, and practical production considerations.';
   } else {
     styleInstruction = '\n## Format: Spoken Interview Answer (Under 10% AI, 90% Human Thinking, Owner Voice)\n' +
-      'Deliver 4 to 6 substantive key speaking beats under [POINTS], and 8 to 14+ authentic, rich spoken sentences under [ANSWER] covering the direct answer, under-the-hood technical mechanics, hands-on architectural experience, and key trade-offs. Speak naturally as the system owner with 90% human thinking, diverse sentence structures, deep technical information, and zero robotic filler.';
+      'Deliver 4 to 6 short speaking beats under [POINTS], and 4 to 5 natural spoken sentences under [ANSWER]: the direct answer first, then how and why with one concrete detail, the way I would think it through out loud for the interviewer. Zero robotic filler.';
   }
 
   // Whatever the style, the card is laid out the same way.
+  // One short spoken paragraph, the way the candidate would say it; this
+  // used to ask for a bold sentence plus 4-6 bullets, which contradicted the
+  // "no bullets, flowing speech" shape in modes.js.
   const LAYOUT_RULE = '\n## Layout of [ANSWER]\n' +
-    'One direct opening sentence with only its key phrase in **bold**, then (after any code block) ' +
-    '4 to 6 bullet lines starting with "- ", each with its own key term in **bold**. ' +
-    'Put depth inside the bullets; never more than 6 bullets; nothing after the last bullet.';
+    '4 to 5 natural spoken sentences as one short paragraph (after any code block): the direct ' +
+    'answer first, then the reasoning. No bullet lists, no headings, nothing after the paragraph.';
   styleInstruction += LAYOUT_RULE;
+  // The Example button has its own shape (code, then a few sentences); the
+  // general length rules above made its explanations run to 7 sentences.
+  if (action === 'example') {
+    styleInstruction = '\n## Length of [ANSWER]\n' +
+      'With code: no introduction line before the code block, and at most 3 short spoken ' +
+      'sentences after it. Without code: 4 to 5 spoken sentences. Nothing else.';
+  }
 
   if (images && images.length) {
     /* The image decides the shape of the answer. A fixed format (the default
