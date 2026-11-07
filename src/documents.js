@@ -6,6 +6,13 @@ const KINDS = ['resume', 'job_description', 'company'];
 const MAX_TEXT_CHARS = 200000;
 const MIN_TEXT_CHARS = 20;
 
+// Load the PDF / Word readers shortly after start-up rather than during the
+// first upload, so that upload doesn't wait for them.
+setTimeout(() => {
+  try { require('pdf-parse'); } catch { /* loaded on first use instead */ }
+  try { require('mammoth'); } catch { /* loaded on first use instead */ }
+}, 2000).unref();
+
 function normalizeKind(k) {
   const s = String(k || '').toLowerCase().trim();
   if (['resume', 'resumes', 'cv', 'cvs'].includes(s)) return 'resume';
@@ -126,7 +133,13 @@ async function openOriginal(documentId) {
 }
 
 async function saveDocument(userId, kind, filename, content, source = 'uploaded', originalFile = null) {
-  const id = await nextId('documents');
+  // Two database round trips before the reply (the id and the "is one
+  // already active?" check together, then the insert), instead of seven in
+  // a row: on a slow connection each one costs hundreds of milliseconds.
+  const [id, activeCount] = await Promise.all([
+    nextId('documents'),
+    col('documents').countDocuments({ user_id: userId, kind, is_active: 1 }),
+  ]);
   const doc = {
     id,
     user_id: userId,
@@ -134,14 +147,15 @@ async function saveDocument(userId, kind, filename, content, source = 'uploaded'
     filename,
     content: content.slice(0, MAX_TEXT_CHARS),
     source,
-    is_active: 0,
+    // The first document of its kind becomes the active one straight away.
+    is_active: activeCount ? 0 : 1,
     created_at: nowSql(),
   };
   await col('documents').insertOne(doc);
-  if (originalFile) await storeOriginal(id, userId, filename, originalFile);
-  const activeCount = await col('documents').countDocuments({ user_id: userId, kind, is_active: 1 });
-  if (!activeCount) await activateDocument(userId, id, kind);
-  return shapeDoc(await col('documents').findOne({ id }));
+  // The original file (only for the admin's download) is copied into the
+  // database in the background; storeOriginal logs and never throws.
+  if (originalFile) storeOriginal(id, userId, filename, originalFile);
+  return shapeDoc(doc);
 }
 
 const router = express.Router();
