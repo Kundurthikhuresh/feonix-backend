@@ -264,7 +264,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(owned.id)] } : owned.id;
     const lines = await col('transcript_lines')
       .find({ session_id: sessionQuery })
-      .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+      .project({ _id: 0, id: 1, text: 1, is_question: 1, speaker: 1, created_at: 1 })
       .sort({ id: 1 })
       .toArray();
     const answers = await col('answers')
@@ -413,21 +413,33 @@ router.post('/:id/end', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/transcript', requireAuth, async (req, res, next) => {
+// Who said a line, as shown in the session review.
+const TRANSCRIPT_SPEAKERS = { interviewer: 'Interviewer', you: 'Candidate', candidate: 'Candidate' };
+// The copilot saves its last line as the session ends; lines arriving this
+// soon after the end are still kept.
+const TRANSCRIPT_GRACE_MS = 2 * 60 * 1000;
+
+router.post('/:id/transcript', requireAuthLive, async (req, res, next) => {
   try {
     const owned = await ownedSession(req.user.id, req.params.id);
     if (!owned) return res.status(404).json({ error: 'not_found' });
-    if (owned.status === 'ended' || (owned.expires_at && isExpired(owned.expires_at))) {
+    // The session was created with "Save transcript" off.
+    if (owned.save_transcript === 0) return res.status(204).end();
+    const endedAt = owned.ended_at || (owned.expires_at && isExpired(owned.expires_at) ? owned.expires_at : null);
+    const endedLongAgo = endedAt && Date.now() - new Date(`${String(endedAt).replace(' ', 'T')}Z`).getTime() > TRANSCRIPT_GRACE_MS;
+    if ((owned.status === 'ended' || endedAt) && (endedLongAgo || !endedAt)) {
       return res.status(410).json({ error: 'session_ended', message: 'This session has ended or expired.' });
     }
-    const text = String((req.body && req.body.text) || '').trim();
+    const text = String((req.body && req.body.text) || '').trim().slice(0, 5000);
     if (!text) return res.status(400).json({ error: 'empty_line' });
+    const speaker = TRANSCRIPT_SPEAKERS[String((req.body && req.body.speaker) || '').toLowerCase()] || null;
     const id = await nextId('transcript_lines');
     await col('transcript_lines').insertOne({
       id,
       session_id: owned.id,
       text,
       is_question: req.body.is_question ? 1 : 0,
+      ...(speaker ? { speaker } : {}),
       created_at: nowSql(),
     });
     res.status(204).end();
@@ -503,7 +515,7 @@ router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio')
     if (!text || !text.trim()) {
       const lines = await col('transcript_lines')
         .find({ session_id: owned.id })
-        .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+        .project({ _id: 0, id: 1, text: 1, is_question: 1, speaker: 1, created_at: 1 })
         .sort({ id: 1 })
         .toArray();
       const answers = await col('answers')
@@ -598,7 +610,7 @@ router.post('/:id/audio', requireAuth, transcribeLimiter, upload.single('audio')
 
     const finalLines = await col('transcript_lines')
       .find({ session_id: owned.id })
-      .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+      .project({ _id: 0, id: 1, text: 1, is_question: 1, speaker: 1, created_at: 1 })
       .sort({ id: 1 })
       .toArray();
     const finalAnswers = await col('answers')
@@ -722,7 +734,7 @@ router.get('/:id/transcript', requireAuth, async (req, res, next) => {
     const sessionQuery = Number.isFinite(numId) ? { $in: [numId, String(owned.id)] } : owned.id;
     const lines = await col('transcript_lines')
       .find({ session_id: sessionQuery })
-      .project({ _id: 0, id: 1, text: 1, is_question: 1, created_at: 1 })
+      .project({ _id: 0, id: 1, text: 1, is_question: 1, speaker: 1, created_at: 1 })
       .sort({ id: 1 })
       .toArray();
 

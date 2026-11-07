@@ -351,17 +351,21 @@ router.post('/forgot-password', forgotPasswordLimiter, async (req, res, next) =>
 
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
       const resetUrl = `${appUrl}/reset-password?token=${token}`;
-      try {
-        const expiresInMinutes = Math.round(RESET_TOKEN_TTL_MS / 60000);
-        const mailResult = await sendPasswordResetEmail(email, resetUrl, { expiresInMinutes });
-        if (!mailResult.success) {
-          console.error('Password reset email failed:', mailResult.error);
-        } else {
-          console.log('Password reset email successfully sent to', email);
-        }
-      } catch (mailErr) {
-        console.error('Failed to send password reset email:', mailErr);
-      }
+      // Sent in the background: talking to the mail server takes several
+      // seconds, and the reply below doesn't depend on it (it is the same
+      // whether or not the account exists). Failures are logged.
+      const expiresInMinutes = Math.round(RESET_TOKEN_TTL_MS / 60000);
+      const startedAt = Date.now();
+      Promise.resolve()
+        .then(() => sendPasswordResetEmail(email, resetUrl, { expiresInMinutes }))
+        .then((mailResult) => {
+          if (!mailResult || !mailResult.success) {
+            console.error('Password reset email failed:', mailResult && mailResult.error);
+          } else {
+            console.log(`Password reset email sent to ${email} in ${Date.now() - startedAt} ms`);
+          }
+        })
+        .catch((mailErr) => console.error('Failed to send password reset email:', mailErr));
     }
 
     // Always respond the same way whether or not the account exists, so
@@ -430,6 +434,6 @@ router.get('/me', requireAuth, async (req, res, next) => {
 });
 
 module.exports = {
-  router, requireAuth, optionalAuth, requireAuthLive, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, normalizeEmail,
+  router, requireAuth, optionalAuth, requireAuthLive, requireOwner, requireAdmin, isDesignatedAdmin, publicUser, publicUserFrom, normalizeEmail,
   BCRYPT_ROUNDS, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, findUserById,
 };
