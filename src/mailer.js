@@ -57,7 +57,17 @@ function getTransporter() {
 /**
  * Base email sending function
  */
+// Domains that can never receive mail (RFC 2606 / 6761): example.com/.net/.org
+// and the .test, .example, .invalid and .localhost endings. Used by test
+// accounts; the mail server refuses them with a long 554 error, so they are
+// skipped instead of tried.
+const UNDELIVERABLE_DOMAIN = /@([a-z0-9-]+\.)*(example\.(com|net|org)|[a-z0-9-]+\.(test|example|invalid|localhost))$/i;
+
 async function sendEmail({ to, subject, html, text }) {
+  if (UNDELIVERABLE_DOMAIN.test(String(to || '').trim())) {
+    console.log(`[mailer] skipped "${subject}" to a reserved test address`);
+    return { success: false, skipped: true, error: 'reserved_test_domain' };
+  }
   try {
     const transport = getTransporter();
     const from = process.env.SMTP_FROM || '"Feonix AI" <support@applywithfeonix.com>';
