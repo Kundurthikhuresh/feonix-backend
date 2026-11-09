@@ -1013,6 +1013,22 @@ router.get('/credits-trials', async (req, res, next) => {
     combined.sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
     const paginated = combined.slice(skip, skip + limitNum);
 
+    // Each customer's free trials left right now (one batched lookup for all
+    // the customers on this page).
+    const pageUserIds = [...new Set(paginated.map((t) => t.user_id).filter((id) => id !== undefined && id !== null))];
+    if (pageUserIds.length) {
+      try {
+        const pageUsers = await col('users').find({ id: { $in: pageUserIds } }, { projection: { id: 1, unlimited_sessions: 1 } }).toArray();
+        const summaries = await credits.accountSummaries(pageUsers);
+        paginated.forEach((t) => {
+          const sum = summaries.get(t.user_id);
+          t.trials_remaining = sum ? sum.trials_remaining : null;
+        });
+      } catch (err) {
+        console.warn(`[admin] trials left not added to ledger: ${err.message}`);
+      }
+    }
+
     res.json({
       transactions: paginated,
       pagination: {

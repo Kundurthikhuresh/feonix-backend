@@ -22,7 +22,8 @@ async function enrichSession(session) {
   const isUnlimitedUser = await credits.isUnlimited(s.user_id);
 
   if (s.expires_at || s.started_at) {
-    if (isUnlimitedUser || s.billing_kind === 'unlimited') {
+    const isTrialSession = s.billing_kind === 'trial' || s.plan === 'free';
+    if (s.billing_kind === 'unlimited' || (isUnlimitedUser && !isTrialSession)) {
       if (s.status !== 'ended') {
         const farExpiry = addMinutesFromNow(48 * 60);
         if (!s.expires_at || isExpired(s.expires_at)) {
@@ -372,8 +373,14 @@ router.post('/:id/start', requireAuth, async (req, res, next) => {
     if (isCopilotOpen) $set.copilot_opened_at = nowSql();
 
     await col('call_sessions').updateOne({ id: owned.id }, { $set });
-    const fresh = await ownedSession(req.user.id, owned.id);
-    res.json({ session: await enrichSession(fresh), account: await credits.accountSummary(req.user.id) });
+    // The saved session is the one read above plus $set (no re-read), and
+    // its details and the balance are prepared together.
+    const fresh = { ...owned, ...$set };
+    const [enriched, account] = await Promise.all([
+      enrichSession(fresh),
+      credits.accountSummary(req.user.id),
+    ]);
+    res.json({ session: enriched, account });
   } catch (err) {
     next(err);
   }

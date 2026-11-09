@@ -74,9 +74,25 @@ function shapeDoc(doc) {
   };
 }
 
+// The copilot's cached copy of the user's documents is dropped after any
+// change, so the next answer uses the new choice (required lazily: answer.js
+// is loaded after this file).
+function forgetCachedDocs(userId) {
+  try { require('./answer').forgetUserDocs(userId); } catch { /* not loaded yet */ }
+}
+
 async function activateDocument(userId, id, kind) {
-  await col('documents').updateMany({ user_id: userId, kind }, { $set: { is_active: 0 } });
+  // Picking a document also undoes "None" for its kind.
+  await col('documents').updateMany({ user_id: userId, kind }, { $set: { is_active: 0 }, $unset: { none_selected: '' } });
   await col('documents').updateOne({ id, user_id: userId }, { $set: { is_active: 1 } });
+  forgetCachedDocs(userId);
+}
+
+// "None" in the Create session window: no document of this kind is used
+// until the user picks or uploads one again.
+async function selectNoDocument(userId, kind) {
+  await col('documents').updateMany({ user_id: userId, kind }, { $set: { is_active: 0, none_selected: true } });
+  forgetCachedDocs(userId);
 }
 
 // The type an original file is served as comes from its extension, never from
@@ -155,6 +171,7 @@ async function saveDocument(userId, kind, filename, content, source = 'uploaded'
   // The original file (only for the admin's download) is copied into the
   // database in the background; storeOriginal logs and never throws.
   if (originalFile) storeOriginal(id, userId, filename, originalFile);
+  forgetCachedDocs(userId);
   return shapeDoc(doc);
 }
 
@@ -188,6 +205,16 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         created_at: doc.created_at,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/none', requireAuth, express.json(), async (req, res, next) => {
+  try {
+    const kind = normalizeKind(String((req.body && req.body.kind) || req.query.kind || ''));
+    await selectNoDocument(req.user.id, kind);
+    res.json({ ok: true, kind });
   } catch (err) {
     next(err);
   }
@@ -289,6 +316,7 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
     }));
     if (!doc) return res.status(404).json({ error: 'not_found' });
     await col('documents').deleteOne({ id: doc.id });
+    forgetCachedDocs(req.user.id);
     await deleteOriginal(doc.id).catch((err) => console.warn(`[documents] original file not deleted for document ${doc.id}: ${err.message}`));
     if (doc.is_active) {
       const next = await col('documents')

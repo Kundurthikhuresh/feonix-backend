@@ -71,7 +71,13 @@ function repairTechnicalAcoustics(text) {
     .replace(/\b(c\s+plus\s+plus|see\s+plus\s+plus)\b/gi, 'C++')
     .replace(/\b(node\s+j\s*s|node\s+js)\b/gi, 'Node.js')
     .replace(/\b(react\s+j\s*s|react\s+js)\b/gi, 'React')
-    .replace(/\bjason\s+(object|payload|response|data|format|string)\b/gi, 'JSON $1');
+    .replace(/\bjason\s+(object|payload|response|data|format|string)\b/gi, 'JSON $1')
+    // "list on topple" / "list and tupple" in a Python question = list and
+    // tuple. Only next to list / Python / mutable, so "the boat might topple"
+    // or "a couple of projects" are never changed.
+    .replace(/\blists?\s+(on|and|an|n|or|in)\s+(topple|tupple|toople|tupel|couple|tuple)s?\b/gi, 'list and tuple')
+    .replace(/\b(topple|tupple|toople|tupel)(s?)\b(?=[^.?!]*\b(python|lists?|immutable|mutable)\b)/gi, 'tuple$2')
+    .replace(/\b(python|lists?|immutable|mutable)\b([^.?!]*?)\b(topple|tupple|toople|tupel)(s?)\b/gi, '$1$2tuple$4');
 }
 
 /**
