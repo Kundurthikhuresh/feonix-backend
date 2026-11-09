@@ -119,11 +119,18 @@ async function publicUser(user) {
 
 function startSession(req, userId) {
   return new Promise((resolve, reject) => {
-    req.session.regenerate((err) => {
-      if (err) return reject(err);
+    const save = () => {
       req.session.userId = userId;
       req.session.save((saveErr) => (saveErr ? reject(saveErr) : resolve()));
-    });
+    };
+    // Replacing an existing login gets a fresh session id; with nobody
+    // signed in there is nothing to replace, and skipping the regenerate
+    // saves a database round trip.
+    if (req.session.userId) {
+      req.session.regenerate((err) => (err ? reject(err) : save()));
+    } else {
+      save();
+    }
   });
 }
 
@@ -252,8 +259,9 @@ router.post('/register', registerLimiter, async (req, res, next) => {
       bcrypt.hash(password, BCRYPT_ROUNDS),
       nextId('users'),
     ]);
-    try {
-      await col('users').insertOne({
+    // The account and its login are saved together (one round trip).
+    const [inserted, loggedIn] = await Promise.allSettled([
+      col('users').insertOne({
         id,
         email,
         password_hash: passwordHash,
@@ -261,15 +269,19 @@ router.post('/register', registerLimiter, async (req, res, next) => {
         token_quota: DEFAULT_TOKEN_QUOTA,
         disabled: 0,
         created_at: nowSql(),
-      });
-    } catch (err) {
-      if (err.code === 11000) {
+      }),
+      startSession(req, id),
+    ]);
+    if (inserted.status === 'rejected') {
+      // No account was made: drop the login that was saved alongside.
+      req.session.destroy(() => {});
+      const err = inserted.reason;
+      if (err && err.code === 11000) {
         return res.status(409).json({ error: 'email_taken', message: 'That email is already registered.' });
       }
       throw err;
     }
-
-    await startSession(req, id);
+    if (loggedIn.status === 'rejected') throw loggedIn.reason;
 
     // Send welcome email (fire-and-forget, deferred to next tick)
     setImmediate(() => {
@@ -282,10 +294,23 @@ router.post('/register', registerLimiter, async (req, res, next) => {
     // every field of the row we just inserted, and a brand-new account
     // cannot have any usage yet — querying for it would only ever confirm
     // zero, at the cost of a full round trip.
-    const account = await credits.accountSummary(id).catch(() => null);
+    // A brand-new account always starts the same way: no need to ask the
+    // database for its balance.
+    const freeTrials = credits.DEFAULT_FREE_TRIALS || 5;
+    const account = {
+      unlimited: false,
+      credits: 0,
+      credits_granted: 0,
+      credits_used: 0,
+      entitlement_minutes: 0,
+      trials_total: freeTrials,
+      trials_used: 0,
+      trials_remaining: freeTrials,
+      trial_minutes: credits.TRIAL_MINUTES || 10,
+    };
     return res.status(201).json({
       user: publicUserFrom({ id, email, role, token_quota: DEFAULT_TOKEN_QUOTA }, 0, account),
-      account: account || { trials_remaining: 5, trials_total: 5, credits: 0, credits_used: 0 },
+      account,
     });
   } catch (err) {
     return next(err);
@@ -418,11 +443,13 @@ router.post('/reset-password', resetPasswordLimiter, async (req, res, next) => {
 
 router.post('/logout', (req, res) => {
   if (!req.session) return res.status(204).end();
+  // The cookie is cleared and the reply sent straight away; the stored
+  // login is deleted in the background (it no longer matches any cookie).
   req.session.destroy((err) => {
-    if (err) return res.status(500).json({ error: 'logout_failed' });
-    res.clearCookie('sid');
-    return res.status(204).end();
+    if (err) console.warn(`[auth] logout: stored login not removed: ${err.message}`);
   });
+  res.clearCookie('sid');
+  return res.status(204).end();
 });
 
 router.get('/me', requireAuth, async (req, res, next) => {

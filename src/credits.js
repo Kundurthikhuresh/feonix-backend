@@ -280,14 +280,13 @@ async function settleSession(session) {
 }
 
 async function accountSummary(userId) {
-  const [trialRem, trialUsed, paidBal, unlimited] = await Promise.all([
+  // Everything at once: one database round instead of two (the credit
+  // totals below never depended on the figures above them).
+  const [trialRem, trialUsed, paidBal, unlimited, grantedRows, consumedRows] = await Promise.all([
     trialsRemaining(userId),
     trialsUsed(userId),
     creditBalance(userId),
     isUnlimited(userId),
-  ]);
-
-  const [grantedRows, consumedRows] = await Promise.all([
     col('credit_transactions').aggregate([
       { $match: { user_id: userId, amount: { $gt: 0 } } },
       { $group: { _id: null, v: { $sum: '$amount' } } },
