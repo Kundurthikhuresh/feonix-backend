@@ -121,6 +121,12 @@ function refreshUserDocs(userId) {
     });
 }
 
+// Called when the user picks, uploads, removes or turns off a document, so
+// the next answer uses the new choice instead of the cached one.
+function forgetUserDocs(userId) {
+  userDocsCache.delete(userId);
+}
+
 async function getCachedUserDocs(userId) {
   const cached = userDocsCache.get(userId);
   const age = cached ? Date.now() - cached.timestamp : Infinity;
@@ -147,6 +153,25 @@ async function getCachedUserDocs(userId) {
  * Interleaving them (documents, then transcript, then question, in one blob)
  * changes the prefix on every request and gives up the cache entirely.
  */
+/* The candidate's name, read from the top of their resume (the first short
+ * line that looks like a person's name, skipping headings such as "Resume",
+ * contact details and job titles). Empty when no such line is found. */
+const NOT_A_NAME = /\b(resume|résumé|curriculum|vitae|cv|profile|summary|objective|contact|email|phone|mobile|address|linkedin|github|portfolio|developer|engineer|designer|manager|analyst|intern|student|consultant|architect|specialist|frontend|backend|full\s*stack|software|experience|education|skills)\b/i;
+function candidateNameFrom(resume) {
+  const lines = String(resume || '').split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 12);
+  for (const raw of lines) {
+    const line = raw.replace(/^(name\s*[:\-]\s*)/i, '').replace(/\s*[|•·,].*$/, '').trim();
+    if (line.length < 3 || line.length > 40) continue;
+    if (/[@\d:/]/.test(line) || NOT_A_NAME.test(line)) continue;
+    if (!/^[A-Za-z][A-Za-z.'-]*(\s+[A-Za-z][A-Za-z.'-]*){1,3}$/.test(line)) continue;
+    return line.split(' ').map((w) => (w === w.toUpperCase() && w.length > 1 ? w[0] + w.slice(1).toLowerCase() : w)).join(' ');
+  }
+  return '';
+}
+
+// "Tell me about yourself" and the other ways an interviewer asks for it.
+const SELF_INTRO_QUESTION = /\b(tell (me|us) (a (little|bit) )?about (yourself|you)|introduce yourself|(give|make) (me |us )?(a |an )?(brief |quick |short )?(self[- ]?)?introduction|walk (me|us) through your (background|resume|profile|journey)|who are you)\b/i;
+
 function buildMessages({
   question, transcript, resume, experience, jobDescription, company,
   sessionJobDescription, mode, action, language, images, answerStyle,
@@ -154,6 +179,8 @@ function buildMessages({
 }) {
   const stable = [];
   if (resume) stable.push(`## Candidate resume\n${resume}`);
+  const candidateName = candidateNameFrom(resume);
+  if (candidateName) stable.push(`## Candidate name\n${candidateName}`);
   /* Real incidents the resume does not contain. The resume lists duties only,
    * so without this a behavioural question had nothing true to draw on and the
    * model either invented a story or declined to tell one the candidate
@@ -192,6 +219,16 @@ function buildMessages({
       'already given out loud. Do not reuse their sentences or phrases. This\n' +
       'question is asking for something you have not said yet — give that, and\n' +
       'assume the interviewer remembers the rest.'
+    );
+  }
+
+  /* "Tell me about yourself": the answer opens with the candidate's own
+   * name from the resume, the way a person introduces themselves. */
+  if (candidateName && SELF_INTRO_QUESTION.test(String(question || ''))) {
+    volatile.push(
+      '## Self-introduction\nThis question asks the candidate to introduce themselves.\n' +
+      `Start the answer with their name: "My name is ${candidateName}", then continue\n` +
+      'naturally with their current role, key experience and skills from the resume.'
     );
   }
 
@@ -781,6 +818,7 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
 
 module.exports = {
   router,
+  forgetUserDocs,
   buildMessages,
   classifyQuestion,
   isCodingQuestion,

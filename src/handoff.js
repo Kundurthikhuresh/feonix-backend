@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const express = require('express');
 const { col, nowSql, publicDoc } = require('./db');
-const { requireAuth, publicUser } = require('./auth');
+const { requireAuth, publicUserFrom } = require('./auth');
+const credits = require('./credits');
 
 const TTL_MS = 90 * 1000;
 const SCHEME = process.env.DESKTOP_SCHEME || 'feonixai';
@@ -37,7 +38,7 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
       session = publicDoc(doc);
     }
 
-    await prune();
+    prune().catch(() => {});
     const token = crypto.randomBytes(32).toString('base64url');
     await col('handoff_tokens').insertOne({
       token,
@@ -58,6 +59,26 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
     });
   } catch (err) {
     next(err);
+  }
+});
+
+// Has the desktop app picked up this hand-off yet? The launch page asks this
+// after opening the feonixai:// link: the app redeems the token as soon as it
+// opens, so "used" means the app is installed and opened; still unused after
+// a while means it most likely isn't installed.
+router.get('/:id/handoff-status', requireAuth, async (req, res, next) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) return res.status(400).json({ error: 'missing_token' });
+    const row = await col('handoff_tokens').findOne(
+      { token, user_id: req.user.id },
+      { projection: { used_at: 1, expires_at: 1 } }
+    );
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    res.set('Cache-Control', 'no-store');
+    return res.json({ used: Boolean(row.used_at), expired: row.expires_at < Date.now() });
+  } catch (err) {
+    return next(err);
   }
 });
 
@@ -107,37 +128,94 @@ router.post('/redeem', express.json(), async (req, res, next) => {
     const token = String((req.body && req.body.token) || '');
     if (!token) return res.status(400).json({ error: 'missing_token' });
 
-    const row = publicDoc(await col('handoff_tokens').findOne({ token }));
-    if (!row) return res.status(401).json({ error: 'invalid_token', message: 'That link is not valid.' });
-
-    if (row.expires_at < Date.now()) {
+    // Check and use the token in one step. A token is single-use, with one
+    // allowance: the same token may sign in again within 30 s of its first
+    // use, so a first sign-in cut off by the window reloading (the reply,
+    // with its login cookie, never arrived) does not leave the app signed out.
+    const now = Date.now();
+    const REUSE_GRACE_MS = 30 * 1000;
+    const claimed = await col('handoff_tokens').findOneAndUpdate(
+      {
+        token,
+        expires_at: { $gte: now - REUSE_GRACE_MS },
+        $or: [
+          { used_at: null, expires_at: { $gte: now } },
+          { used_at: { $gte: now - REUSE_GRACE_MS } },
+        ],
+      },
+      [{ $set: { used_at: { $ifNull: ['$used_at', now] } } }]
+    );
+    const claimedDoc = claimed && Object.prototype.hasOwnProperty.call(claimed, 'value') ? claimed.value : claimed;
+    if (!claimedDoc) {
+      // Only on failure: find out why, for the right message.
+      const existing = await col('handoff_tokens').findOne({ token });
+      if (!existing) return res.status(401).json({ error: 'invalid_token', message: 'That link is not valid.' });
+      if (existing.used_at) {
+        return res.status(401).json({
+          error: 'token_used',
+          message: 'That link was already used. Start the session again from the dashboard.',
+        });
+      }
       return res.status(401).json({
         error: 'token_expired',
         message: 'That link expired. Start the session again from the dashboard.',
       });
     }
-    if (row.used_at) {
-      return res.status(401).json({
-        error: 'token_used',
-        message: 'That link was already used. Start the session again from the dashboard.',
-      });
+    const row = publicDoc(claimedDoc);
+
+    // The login is saved at the same time as the user and the session are
+    // read (the token already names the user), so the whole redeem is two
+    // round trips. The session comes back in the reply so the desktop app
+    // can show it without another request.
+    const saveLogin = () => new Promise((resolve, reject) => {
+      const save = () => {
+        req.session.userId = row.user_id;
+        req.session.save((saveErr) => (saveErr ? reject(saveErr) : resolve()));
+      };
+      // A fresh login (the desktop app's first request) needs no regenerate,
+      // which would cost an extra round trip; an existing one is replaced.
+      if (req.session.userId) {
+        req.session.regenerate((err) => (err ? reject(err) : save()));
+      } else {
+        save();
+      }
+    });
+    let userDoc;
+    let sessionDoc;
+    let trialsLeft;
+    let creditsLeft;
+    let unlimited;
+    try {
+      // The balance (free trials, credits, plan) is read alongside, so the
+      // desktop window can show it with the session at once; each is one
+      // database round, so this adds no waiting.
+      [userDoc, sessionDoc, , trialsLeft, creditsLeft, unlimited] = await Promise.all([
+        col('users').findOne({ id: row.user_id }),
+        row.session_id ? col('call_sessions').findOne({ id: Number(row.session_id), user_id: row.user_id }) : null,
+        saveLogin(),
+        credits.trialsRemaining(row.user_id).catch(() => null),
+        credits.creditBalance(row.user_id).catch(() => null),
+        credits.isUnlimited(row.user_id).catch(() => null),
+      ]);
+    } catch {
+      return res.status(500).json({ error: 'session_failed' });
+    }
+    const user = publicDoc(userDoc);
+    if (!user || user.disabled) {
+      // Account gone or disabled since the link was made: undo the login.
+      req.session.destroy(() => {});
+      return res.status(401).json({ error: 'invalid_token' });
     }
 
-    await col('handoff_tokens').updateOne(
-      { token },
-      { $set: { used_at: Date.now() } }
-    );
-
-    const user = publicDoc(await col('users').findOne({ id: row.user_id }));
-    if (!user) return res.status(401).json({ error: 'invalid_token' });
-
-    req.session.regenerate((err) => {
-      if (err) return res.status(500).json({ error: 'session_failed' });
-      req.session.userId = user.id;
-      req.session.save(async (saveErr) => {
-        if (saveErr) return res.status(500).json({ error: 'session_failed' });
-        return res.json({ user: await publicUser(user), session_id: row.session_id });
-      });
+    return res.json({
+      // The balance is fetched separately by the app (/api/sessions/account),
+      // so it is not worked out here.
+      user: publicUserFrom(user, 0, null),
+      session_id: row.session_id,
+      session: sessionDoc ? publicDoc(sessionDoc) : null,
+      account: trialsLeft === null || creditsLeft === null || unlimited === null
+        ? null
+        : { trials_remaining: trialsLeft, credits: creditsLeft, unlimited },
     });
   } catch (err) {
     next(err);

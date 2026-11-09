@@ -486,7 +486,7 @@ async function settleUsage(usageId, promptTokens, outputTokens) {
 
 async function loadDocContent(userId, kind, maxChars) {
   const row = await col('documents')
-    .find({ user_id: userId, kind })
+    .find({ user_id: userId, kind, none_selected: { $ne: true } })
     .sort({ is_active: -1, id: -1 })
     .limit(1)
     .next();
@@ -504,7 +504,7 @@ async function loadAllUserDocs(userId, kinds = ['resume', 'experience', 'job_des
 
   try {
     const rows = await col('documents')
-      .find({ user_id: userId, kind: { $in: kinds } })
+      .find({ user_id: userId, kind: { $in: kinds }, none_selected: { $ne: true } })
       .sort({ is_active: -1, id: -1 })
       .toArray();
 

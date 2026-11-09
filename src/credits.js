@@ -139,7 +139,11 @@ async function grantTrials(userId, count, { adminId = null, reason = null } = {}
  * - Idempotent: If already authorized/active and not expired, returns existing allocation.
  */
 async function openSession(userId, sessionId, requestedKind) {
-  if (await isUnlimited(userId)) {
+  const unlimitedUser = await isUnlimited(userId);
+  // Full Session on an unlimited plan: no clock. Free Session is a real
+  // 10-minute trial even on an unlimited plan (the user chose it), so it
+  // counts down from 10:00 and uses one trial like for anyone else.
+  if (unlimitedUser && (requestedKind === 'paid' || requestedKind === 'full' || requestedKind === 'unlimited')) {
     return { kind: 'unlimited', minutes: UNLIMITED_MINUTES };
   }
 
@@ -182,6 +186,8 @@ async function openSession(userId, sessionId, requestedKind) {
       if (sessionId) {
         await col('call_sessions').updateOne({ id: Number(sessionId), user_id: userId }, { $unset: { trial_charged: '' } });
       }
+      // No trials left on an unlimited plan: the session simply runs unlimited.
+      if (unlimitedUser) return { kind: 'unlimited', minutes: UNLIMITED_MINUTES };
       const err = new Error('All 5 free trials have been used. Please purchase paid credits to continue.');
       err.code = 'no_trials_left';
       err.status = 409;

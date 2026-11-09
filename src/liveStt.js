@@ -31,7 +31,10 @@ const {
 const LIVE_MODEL = process.env.LIVE_TRANSCRIBE_MODEL || 'gpt-live-transcribe';
 const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime?intent=transcription';
 const TICKET_TTL_MS = 60 * 1000;
-const MAX_CHANNELS_PER_USER = 4;
+// Two channels per listening run (mic + meeting audio). Stop then Start
+// opens two new ones while the old two are still finishing their last turn
+// (up to a few seconds), so room is left for that overlap.
+const MAX_CHANNELS_PER_USER = 6;
 // 24 kHz, 16-bit mono.
 const BYTES_PER_SECOND = 24000 * 2;
 // A commit needs some audio behind it; shorter turns are dropped, not sent.
@@ -122,13 +125,31 @@ async function handleChannel(client, ticket) {
   if (quota.check(user, used, QUOTA_RESERVE_TOKENS).blocked) {
     return fail('quota_exhausted', 'Monthly token safety limit reached. Transcription stopped.');
   }
+  // The checks above take seconds on a slow database. If the browser closed
+  // this connection meanwhile (mic stopped), its close was missed: counting
+  // it now would never be undone, and after a few stop/starts every new
+  // channel was refused until the server restarted.
+  if (client.readyState !== WebSocket.OPEN) return undefined;
   if ((openChannels.get(userId) || 0) >= MAX_CHANNELS_PER_USER) {
     return fail('too_many_channels', 'Too many live transcription channels open.');
   }
   openChannels.set(userId, (openChannels.get(userId) || 0) + 1);
 
   const { getSessionLive } = require('./sessions');
-  const session = ticket.s ? await getSessionLive(userId, ticket.s) : null;
+  const uncount = () => openChannels.set(userId, Math.max(0, (openChannels.get(userId) || 1) - 1));
+  let session = null;
+  try {
+    session = ticket.s ? await getSessionLive(userId, ticket.s) : null;
+  } catch (err) {
+    uncount();
+    throw err;
+  }
+  // Closed by the browser during that read: give the place back, and open
+  // nothing upstream for it.
+  if (client.readyState !== WebSocket.OPEN) {
+    uncount();
+    return undefined;
+  }
   const prompt = promptFor(session);
   // English only, whatever an older session was created with.
   const langCode = 'en';
