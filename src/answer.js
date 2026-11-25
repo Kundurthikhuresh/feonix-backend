@@ -67,6 +67,66 @@ const MAX_TRANSCRIPT_CHARS = 6000;
 // against an oversized or malformed request rather than a real-world limit
 // anyone taking screenshots by hand would ever hit.
 const MAX_IMAGES = 8;
+
+/* Screenshot -> question text.
+ *
+ * A screenshot used to be answered in one step, the image plus the long
+ * answer prompt. For an ordinary whole-screen capture (a browser page listing
+ * questions, a chat, an editor) GPT-4o then often replied "I don't see a
+ * question in this screenshot", although it reads the same image correctly
+ * when only asked which question it shows. So a screenshot is now read first
+ * with that short request, and the text found is answered exactly like a
+ * question typed in Chat or heard on the call. Returns '' when the image holds
+ * no question (blank screen, desktop) or the read fails: the caller then keeps
+ * the old image path. */
+const SCREEN_READ_MODEL = process.env.VISION_MODEL || 'gpt-4o';
+const SCREEN_READ_TIMEOUT_MS = 20000;
+const SCREEN_READ_PROMPT =
+  'What question or problem is shown in this screenshot? Reply as JSON: {"question": "..."}. ' +
+  'Put the question text there exactly as it appears; if several questions are listed, put all ' +
+  'of them, numbered, one per line; for a coding problem include the full statement, examples, ' +
+  'constraints and any code shown. If the screenshot shows no question, problem or code, use an ' +
+  'empty string.';
+// What the copilot sends when the user typed nothing with the image.
+const DEFAULT_IMAGE_PROMPTS = new Set([
+  'answer what is shown in this image.',
+  'analyze the attached screenshot and provide the complete solution.',
+  'analyze the question and provide the solution.',
+]);
+
+async function readScreenshotQuestion(images, apiKey) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SCREEN_READ_TIMEOUT_MS);
+  try {
+    const r = await openai(apiKey).chat.completions.create({
+      model: SCREEN_READ_MODEL,
+      temperature: 0,
+      max_completion_tokens: 1200,
+      response_format: { type: 'json_object' },
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: SCREEN_READ_PROMPT },
+          ...images.map((img) => ({
+            type: 'image_url',
+            image_url: { url: img.startsWith('data:') ? img : `data:image/png;base64,${img}`, detail: 'high' },
+          })),
+        ],
+      }],
+    }, { signal: controller.signal });
+    const parsed = JSON.parse((r.choices[0] && r.choices[0].message.content) || '{}');
+    return String(parsed.question || '').trim();
+  } catch (err) {
+    console.warn(`[ANSWER] screenshot read failed: ${err.message}`);
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function customKeyFrom(req) {
+  return req.get('x-openai-api-key') || (req.body && req.body.apiKey) || (req.headers['authorization']?.startsWith('Bearer ') && req.headers['authorization'].slice(7).startsWith('sk-') ? req.headers['authorization'].slice(7) : null);
+}
 const MAX_DOC_CHARS = 8000;
 
 const router = express.Router();
@@ -524,9 +584,9 @@ router.post('/warm', requireAuthLive, async (req, res) => {
 });
 
 router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
-  const question = String((req.body && req.body.question) || '').trim();
+  let question = String((req.body && req.body.question) || '').trim();
   const rawImages = (req.body && req.body.images) || (req.body && req.body.image ? [req.body.image] : []);
-  const images = Array.isArray(rawImages) ? rawImages.filter(Boolean).slice(0, MAX_IMAGES) : [];
+  let images = Array.isArray(rawImages) ? rawImages.filter(Boolean).slice(0, MAX_IMAGES) : [];
   const answerStyle = req.body && req.body.answerStyle;
   const action = ACTIONS[req.body && req.body.action] ? req.body.action : DEFAULT_ACTION;
 
@@ -594,6 +654,18 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
     .replace(/I cannot provide the full code[^\n]*/gi, '')
     .replace(/as an ai.*?(cannot|unable)[^\n]*/gi, '');
   const transcript = rawTranscript;
+
+  // Screenshot: read the question off it, then answer that text the same way
+  // as Chat and voice (see readScreenshotQuestion). Nothing found: the image
+  // path below stays as it was.
+  if (images.length && action === 'answer') {
+    const onScreen = await readScreenshotQuestion(images, customKeyFrom(req));
+    if (onScreen) {
+      const typed = DEFAULT_IMAGE_PROMPTS.has(question.toLowerCase()) ? '' : question;
+      question = typed ? `${typed}\n\nOn screen:\n${onScreen}` : onScreen;
+      images = [];
+    }
+  }
 
   const messages = buildMessages({
     question,
@@ -676,7 +748,7 @@ router.post('/', requireAuthLive, answerLimiter, async (req, res, next) => {
   // If the browser goes away mid-answer, stop paying for the rest of it.
   res.on('close', () => controller.abort());
 
-  const customKey = req.get('x-openai-api-key') || (req.body && req.body.apiKey) || (req.headers['authorization']?.startsWith('Bearer ') && req.headers['authorization'].slice(7).startsWith('sk-') ? req.headers['authorization'].slice(7) : null);
+  const customKey = customKeyFrom(req);
 
   // Latency log: request received → model's first token → answer complete.
   const tRequest = Date.now();
