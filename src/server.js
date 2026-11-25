@@ -34,7 +34,7 @@ const { router: historyRouter } = require('./history');
 const { router: sessionsRouter } = require('./sessions');
 const notesRouter = require('./notes');
 const visionRouter = require('./vision');
-const { router: handoffRouter } = require('./handoff');
+const { router: handoffRouter, linkRouter: desktopLinkRouter } = require('./handoff');
 
 // Career Platform Routes
 const profileRouter = require('./profile');
@@ -150,6 +150,7 @@ app.use('/api/live-stt', liveSttRouter);
 app.use('/api/history', historyRouter);
 app.use('/api/vision', visionRouter);
 app.use('/api/sessions', handoffRouter);
+app.use('/api/desktop-link', desktopLinkRouter);
 app.use('/api/sessions', notesRouter);
 app.use('/api/sessions', sessionsRouter);
 

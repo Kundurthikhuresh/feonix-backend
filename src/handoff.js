@@ -40,6 +40,9 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
 
     prune().catch(() => {});
     const token = crypto.randomBytes(32).toString('base64url');
+    // The browser's desktop-link key rides along, so the app learns it when it
+    // redeems this token (see linkRouter below). Gone with the token in 90 s.
+    const linkKey = validKey(req.body);
     await col('handoff_tokens').insertOne({
       token,
       user_id: req.user.id,
@@ -47,6 +50,7 @@ router.post('/:id/handoff', requireAuth, async (req, res, next) => {
       expires_at: Date.now() + TTL_MS,
       used_at: null,
       created_at: nowSql(),
+      ...(linkKey ? { link_key: linkKey } : {}),
     });
 
     res.json({
@@ -109,6 +113,10 @@ router.post('/:id/launch-desktop', requireAuth, async (req, res, next) => {
     // made sense if the API happened to run on the same machine as the
     // desktop app. That's not how a hosted backend works, so it's removed.
     // Opens the desktop Start Interview screen; the copilot starts from there.
+    const linkKey = validKey(req.body);
+    if (linkKey) {
+      await col('handoff_tokens').updateOne({ token }, { $set: { link_key: linkKey } });
+    }
     const deepLink = `${SCHEME}://launch?token=${token}&session=${sessionId}`;
 
     res.json({
@@ -213,6 +221,8 @@ router.post('/redeem', express.json(), async (req, res, next) => {
       user: publicUserFrom(user, 0, null),
       session_id: row.session_id,
       session: sessionDoc ? publicDoc(sessionDoc) : null,
+      // The app keeps this, to follow the browser's account when opened directly.
+      link_key: row.link_key || null,
       account: trialsLeft === null || creditsLeft === null || unlimited === null
         ? null
         : { trials_remaining: trialsLeft, credits: creditsLeft, unlimited },
@@ -222,4 +232,79 @@ router.post('/redeem', express.json(), async (req, res, next) => {
   }
 });
 
-module.exports = { router, SCHEME };
+/* Desktop link: opening the desktop app directly (Start menu, not the
+ * dashboard's "Start session") gave it whatever account it had saved from an
+ * earlier hand-off, not the account signed in on the website now.
+ *
+ * The browser keeps a random link key (localStorage) and tells the server
+ * which account is signed in there, on every sign-in; it removes it on sign
+ * out. The key reaches the desktop app once, inside a hand-off (redeem's
+ * reply). Opened directly, the app claims the key and is signed in as the
+ * browser's current account. Only a hash of the key is stored. */
+const LINK_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const LINK_KEY_RE = /^[A-Za-z0-9_-]{32,128}$/;
+const linkRouter = express.Router();
+const hashKey = (key) => crypto.createHash('sha256').update(key).digest('hex');
+const validKey = (body) => {
+  const key = String((body && body.key) || '');
+  return LINK_KEY_RE.test(key) ? key : null;
+};
+
+// The browser: "this key now belongs to the account signed in here".
+linkRouter.post('/', requireAuth, async (req, res, next) => {
+  try {
+    const key = validKey(req.body);
+    if (!key) return res.status(400).json({ error: 'invalid_key' });
+    await col('desktop_links').updateOne(
+      { key_hash: hashKey(key) },
+      { $set: { key_hash: hashKey(key), user_id: req.user.id, updated_at: Date.now() } },
+      { upsert: true }
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// The browser, signing out: the key no longer names anyone.
+linkRouter.delete('/', requireAuth, async (req, res, next) => {
+  try {
+    const key = validKey(req.body);
+    if (!key) return res.status(400).json({ error: 'invalid_key' });
+    await col('desktop_links').deleteOne({ key_hash: hashKey(key), user_id: req.user.id });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// The desktop app, opened directly: sign in as the browser's account.
+linkRouter.post('/claim', async (req, res, next) => {
+  try {
+    const key = validKey(req.body);
+    if (!key) return res.status(400).json({ error: 'invalid_key' });
+    const link = await col('desktop_links').findOne({ key_hash: hashKey(key) });
+    if (!link || Date.now() - Number(link.updated_at || 0) > LINK_TTL_MS) {
+      return res.status(404).json({ error: 'no_link' });
+    }
+    const user = publicDoc(await col('users').findOne({ id: link.user_id }));
+    if (!user || user.disabled) return res.status(404).json({ error: 'no_link' });
+
+    const switched = req.session.userId !== link.user_id;
+    if (switched) {
+      await new Promise((resolve, reject) => {
+        const save = () => {
+          req.session.userId = link.user_id;
+          req.session.save((saveErr) => (saveErr ? reject(saveErr) : resolve()));
+        };
+        if (req.session.userId) req.session.regenerate((err) => (err ? reject(err) : save()));
+        else save();
+      });
+    }
+    res.json({ ok: true, user: publicUserFrom(user, 0, null), switched });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = { router, linkRouter, SCHEME };
